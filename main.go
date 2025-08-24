@@ -45,36 +45,36 @@ const (
 type EnergySource struct {
 	Name        string
 	Type        SourceType
-	CapacityKW  float64  // max instantaneous power available (kW)
+	CapacityKW  float64  
 	AvailableKW float64  // dynamic available power (for renewables)
-	Efficiency  float64  // efficiency (0..1)
-	FailureProb float64  // probability of outage per step
-	DownUntil   int      // timestep until which source is down
+	Efficiency  float64  
+	FailureProb float64  
+	DownUntil   int      
 }
 
 type Battery struct {
 	CapacityKWh float64
 	LevelKWh    float64
-	ChargeRate  float64  // kW
-	DischargeRate float64 // kW
+	ChargeRate  float64  
+	DischargeRate float64 
 	Efficiency  float64
 }
 
 type Consumer struct {
 	ID         int
-	Priority   int     // higher means more priority (for NPPS)
-	Weight     float64 // for WRR (group weight)
-	Deadline   int     // absolute timestep deadline (for EDF)
+	Priority   int     // for NPPS
+	Weight     float64 // for WRR 
+	Deadline   int     // for EDF
 }
 
 type Request struct {
-	Time       int     // arrival time
+	Time       int     // arrival
 	ConsumerID int
-	AmountKWh  float64 // energy needed
+	AmountKWh  float64 
 	Priority   int
 	Weight     float64
 	Deadline   int
-	// metrics filled during simulation
+	//filled during simulation
 	StartTime int
 	EndTime   int
 	ServedKW  float64

@@ -1,9 +1,9 @@
-# SmartGrid Go Starter
-
-Run everything:
-```bash
-docker compose up --build
+# SmartGrid Simulator
+## Requirements
+first you need docker installed (for grafana and prometheus but it doesn't effect the program execution)
+use this command to isntall required golang libraries : 
 ```
-Open Grafana: http://localhost:3000 (admin/admin)
-
-Prometheus scrapes metrics from `sim` on :2112/metrics.
+go mod tidy
+```
+## Running Simulation
+wait for more info
