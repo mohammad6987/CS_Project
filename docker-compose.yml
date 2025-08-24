@@ -1,0 +1,15 @@
+version: "3"
+services:
+  prometheus:
+    image: docker.arvancloud.ir/prom/prometheus
+    volumes:
+      - ./prometheus.yml:/etc/prometheus/prometheus.yml
+    ports:
+      - "9090:9090"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"  
+
+  grafana:
+    image: docker.arvancloud.ir/grafana/grafana
+    ports:
+      - "3000:3000"
