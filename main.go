@@ -735,6 +735,87 @@ func euclid2(a,b []float64) float64 { s:=0.0; for i:=range a{ d:=a[i]-b[i]; s+=d
 
 
 
+
+
+
+type QAgent struct {
+	Q map[[3]int]map[SchedulerType]float64 // state buckets -> action values
+	Alpha, Gamma, Epsilon float64
+	Actions []SchedulerType
+}
+
+func NewQAgent() *QAgent {
+	qa := &QAgent{Q: make(map[[3]int]map[SchedulerType]float64), Alpha:0.3, Gamma:0.95, Epsilon:0.1}
+	qa.Actions = []SchedulerType{FIFO, NPPS, WRR, EDF}
+	return qa
+}
+
+func bucketize(x float64, cuts []float64) int {
+	for i, c := range cuts { if x < c { return i } }
+	return len(cuts)
+}
+
+func (q *QAgent) selectAction(state [3]int, rng *rand.Rand) SchedulerType {
+	if rng.Float64() < q.Epsilon { return q.Actions[rng.Intn(len(q.Actions))] }
+	// greedy
+	best := q.Actions[0]; bestV := math.Inf(-1)
+	for _, a := range q.Actions {
+		v := q.Q[state][a]
+		if v > bestV { bestV=v; best=a }
+	}
+	return best
+}
+
+func (q *QAgent) update(state [3]int, action SchedulerType, reward float64, next [3]int) {
+	if q.Q[state] == nil { q.Q[state] = make(map[SchedulerType]float64) }
+	if q.Q[next] == nil { q.Q[next] = make(map[SchedulerType]float64) }
+	// max_a' Q(next,a')
+	maxNext := math.Inf(-1)
+	for _, a := range q.Actions { if q.Q[next][a] > maxNext { maxNext = q.Q[next][a] } }
+	old := q.Q[state][action]
+	q.Q[state][action] = old + q.Alpha*(reward + q.Gamma*maxNext - old)
+}
+
+// Train Q-agent by running episodes where action is choosing scheduler per step.
+func trainQLearning(base *SimState, episodes, steps int, seed int64) *QAgent {
+	rng := rand.New(rand.NewSource(seed))
+	agent := NewQAgent()
+	for ep := 0; ep < episodes; ep++ {
+		// reset sim copy
+		s := *base
+		s.Time = 0; s.Backlog=nil; s.Completed=nil; s.UnservedKWh=0
+		s.Battery = &Battery{CapacityKWh: base.Battery.CapacityKWh, LevelKWh: base.Battery.LevelKWh, ChargeRate: base.Battery.ChargeRate, DischargeRate: base.Battery.DischargeRate, Efficiency: base.Battery.Efficiency}
+		state := observeState(&s)
+		for t:=0; t<steps; t++ {
+			// agent picks scheduler
+			a := agent.selectAction(state, rng)
+			s.Scheduler = a
+			s.step(rng)
+			next := observeState(&s)
+			// reward: negative waiting and unserved energy, encourage completion
+			reward := -float64(len(s.Backlog)) - s.UnservedKWh*0.1 + float64(len(s.Completed))*0.01
+			agent.update(state, a, reward, next)
+			state = next
+		}
+	}
+	return agent
+}
+
+func observeState(s *SimState) [3]int {
+	// buckets: supply, demand, battery level
+	supplyKW := 0.0
+	for _, src := range s.Sources { supplyKW += src.AvailableKW }
+	demandKWh := 0.0
+	for _, r := range s.Backlog { demandKWh += r.AmountKWh }
+	batt := s.Battery.LevelKWh
+	return [3]int{
+		bucketize(supplyKW, []float64{2, 5, 10}),
+		bucketize(demandKWh, []float64{3, 8, 15}),
+		bucketize(batt, []float64{2, 5, 10}),
+	}
+}
+
+
 func main(){
 	http.Handle("/metrics", promhttp.Handler())
     go func() {
