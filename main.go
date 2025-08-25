@@ -259,11 +259,77 @@ func (s *SimState) pickNextRequests(rng *rand.Rand) []*Request {
 			s.Backlog[0] = chosen
 		}
 	}
-	// Return a small batch to attempt service this step 
+	//small batch to attempt service this step 
 	batch := 3
 	if len(s.Backlog) < batch { batch = len(s.Backlog) }
 	return s.Backlog[:batch]
 }
+
+
+func (s *SimState) serveBatch(rng *rand.Rand, batch []*Request) {
+	if len(batch) == 0 { return }
+	availKW := 0.0
+	for _, src := range s.Sources { availKW += src.AvailableKW * src.Efficiency }
+
+	availKW += math.Min(s.Battery.DischargeRate, s.Battery.LevelKWh/s.Params.TimeStepHours) * s.Battery.Efficiency
+	
+	remainingKWh := availKW * s.Params.TimeStepHours
+	for _, req := range batch {
+		if req.StartTime < 0 { req.StartTime = s.Time }
+		need := req.AmountKWh + s.Params.OverheadC
+		served := math.Min(need, remainingKWh)
+		remainingKWh -= served
+		req.AmountKWh -= served - s.Params.OverheadC // net served to demand
+		if req.AmountKWh <= 1e-6 {
+			req.Served = true
+			req.EndTime = s.Time + 1
+			// remove request later
+		}
+		if remainingKWh <= 1e-9 { break }
+	}
+	// Update sources/battery consumption proportional 
+	consumedKWh := availKW*s.Params.TimeStepHours - remainingKWh
+	// discharge battery up to need
+	if consumedKWh > 0 {
+		fromBatt := math.Min(consumedKWh, math.Min(s.Battery.DischargeRate*s.Params.TimeStepHours, s.Battery.LevelKWh))
+		s.Battery.LevelKWh -= fromBatt
+		consumedKWh -= fromBatt
+	}
+	// reduce renewable/non-renewable available power notionally
+	_ = consumedKWh
+	// charge battery if excess from renewables 
+	genKW := 0.0
+	for _, src := range s.Sources { if src.Type==Renewable { genKW += src.AvailableKW*src.Efficiency } }
+	excessKWh := math.Max(0, genKW*s.Params.TimeStepHours - (availKW*s.Params.TimeStepHours - remainingKWh))
+	if excessKWh > 0 {
+		charge := math.Min(excessKWh, s.Battery.ChargeRate*s.Params.TimeStepHours)
+		s.Battery.LevelKWh = clamp(s.Battery.LevelKWh + charge*s.Battery.Efficiency, 0, s.Battery.CapacityKWh)
+	}
+	// Remove served and expired
+	keep := s.Backlog[:0]
+	for _, r := range s.Backlog {
+		if r.Served {
+			s.Completed = append(s.Completed, r)
+			continue
+		}
+		if s.Time+1 > r.Deadline {
+			// missed deadline 
+			s.UnservedKWh += math.Max(0, r.AmountKWh)
+			continue
+		}
+		keep = append(keep, r)
+	}
+	s.Backlog = keep
+}
+
+func (s *SimState) step(rng *rand.Rand) {
+	s.updateSources(rng)
+	s.generateRequests(rng)
+	batch := s.pickNextRequests(rng)
+	s.serveBatch(rng, batch)
+	s.Time++
+}
+
 
 
 
