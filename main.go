@@ -1,11 +1,18 @@
 package main
 
 import (
+	"bufio"
+	"encoding/csv"
+	"errors"
+	"fmt"
 	"log"
 	"math"
 	"math/rand"
 	"net/http"
+	"os"
 	"sort"
+	"strconv"
+	"strings"
 	"time"
 
 	"github.com/prometheus/client_golang/prometheus"
@@ -826,4 +833,78 @@ func main(){
     }()
 
 	time.Sleep(1000)
+}
+
+
+
+type Dataset struct {
+	Header []string
+	X [][]float64
+	Y []float64 
+}
+
+
+func loadCSV(path string, target string) (*Dataset, error) {
+	f, err := os.Open(path); if err != nil { return nil, err }
+	defer f.Close()
+	r := csv.NewReader(bufio.NewReader(f))
+	r.TrimLeadingSpace = true
+	rows, err := r.ReadAll(); if err != nil { return nil, err }
+	if len(rows) < 2 { return nil, errors.New("csv too small") }
+	head := rows[0]
+	tIdx := -1
+	if target != "" {
+		for i, h := range head { if strings.EqualFold(strings.TrimSpace(h), target) { tIdx = i; break } }
+		if tIdx == -1 { return nil, fmt.Errorf("target %s not found", target) }
+	}
+	nCols := len(head)
+	isNum := make([]bool, nCols)
+	cols := make([][]float64, nCols)
+	for i:=1;i<len(rows);i++{
+		for j:=0;j<nCols;j++{
+			v := strings.TrimSpace(rows[i][j])
+			if v=="" || strings.EqualFold(v, "NA") { continue }
+			if x, err := strconv.ParseFloat(strings.ReplaceAll(v, ",", "."), 64); err==nil {
+				isNum[j] = true
+				cols[j] = append(cols[j], x)
+			}
+		}
+	}
+	
+	numIdx := []int{}
+	for j:=0;j<nCols;j++{ if isNum[j] && j!=tIdx { numIdx = append(numIdx, j) } }
+	X := [][]float64{}
+	Y := []float64{}
+	for i:=1;i<len(rows);i++{
+		rowOK := true
+		vec := make([]float64, len(numIdx))
+		for jj, j := range numIdx {
+			x, err := strconv.ParseFloat(strings.ReplaceAll(rows[i][j], ",", "."), 64)
+			if err!=nil { rowOK=false; break }
+			vec[jj] = x
+		}
+		var y float64
+		if tIdx >=0 {
+			val := strings.ReplaceAll(rows[i][tIdx], ",", ".")
+			if val=="" { rowOK=false } else {
+				var err error; y, err = strconv.ParseFloat(val, 64); if err!=nil { rowOK=false }
+			}
+		}
+		if rowOK { X = append(X, vec); if tIdx>=0 { Y = append(Y, y) } }
+	}
+	return &Dataset{Header: head, X: X, Y: Y}, nil
+}
+
+
+
+func rmse(y, yhat []float64) float64 {
+	s := 0.0; n := len(y)
+	for i:=0;i<n;i++{ d:=y[i]-yhat[i]; s += d*d }
+	return math.Sqrt(s/float64(n))
+}
+
+func mae(y, yhat []float64) float64 {
+	s := 0.0; n := len(y)
+	for i:=0;i<n;i++{ s += math.Abs(y[i]-yhat[i]) }
+	return s/float64(n)
 }
