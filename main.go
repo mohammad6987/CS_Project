@@ -2,12 +2,15 @@ package main
 
 import (
 	"log"
+	"math"
+	"math/rand"
 	"net/http"
 	"time"
 
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promauto"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
+	"gonum.org/v1/gonum/stat/distuv"
 )
 
 
@@ -49,7 +52,7 @@ type EnergySource struct {
 	AvailableKW float64  // dynamic available power 
 	Efficiency  float64  
 	FailureProb float64  
-	DownUntil   int      
+	DownUntil   int   // timestep until which source is down 
 }
 
 type Battery struct {
@@ -159,6 +162,107 @@ type SimState struct {
 	Scheduler  SchedulerType
 	Params     SimParams
 	UnservedKWh float64
+}
+
+
+
+
+
+func newPoisson(r *rand.Rand, rate float64) distuv.Poisson {
+	return distuv.Poisson{Lambda: rate, Src: r}
+}
+
+func newExp(r *rand.Rand, rate float64) distuv.Exponential {
+	return distuv.Exponential{Rate: rate, Src: r}
+}
+
+func clamp(x, lo, hi float64) float64 { if x < lo { return lo }; if x > hi { return hi }; return x }
+
+func (s *SimState) updateSources(rng *rand.Rand) {
+	for _, src := range s.Sources {
+		if s.Time < src.DownUntil { // in outage
+			src.AvailableKW = 0
+			continue
+		}
+		if rng.Float64() < src.FailureProb {
+			// outage for a few steps
+			dur := rng.Intn(6) + 1
+			src.DownUntil = s.Time + dur
+			src.AvailableKW = 0
+			continue
+		}
+		if src.Type == Renewable {
+			// fluctuate around capacity with exponential shock
+			shock := newExp(rng, s.Params.LambdaRenewable).Rand()
+			val := src.CapacityKW * math.Exp(-shock)
+			src.AvailableKW = clamp(val, 0, src.CapacityKW)
+		} else {
+			src.AvailableKW = src.CapacityKW
+		}
+	}
+}
+
+// for now until a csv reader and a dataset is found  
+// uses Poisson number of consumers
+//  requests with random sizes and deadlines
+func (s *SimState) generateRequests(rng *rand.Rand) {
+	pois := newPoisson(rng, s.Params.ChiDemand)
+	n := int(pois.Rand())
+	for i := 0; i < n; i++ {
+		c := s.Consumers[rng.Intn(len(s.Consumers))]
+		amt := 0.5 + rng.Float64()*3.0 // kWh demand
+		deadline := s.Time + 2 + rng.Intn(12) // steps
+		req := &Request{
+			Time: s.Time, ConsumerID: c.ID, AmountKWh: amt,
+			Priority: c.Priority, Weight: c.Weight, Deadline: deadline,
+			StartTime: -1, EndTime: -1,
+		}
+		s.Backlog = append(s.Backlog, req)
+	}
+}
+
+
+func (s *SimState) pickNextRequests(rng *rand.Rand) []*Request {
+	if len(s.Backlog) == 0 { return nil }
+	switch s.Scheduler {
+	case FIFO:
+		// sort by arrival time
+		sort.SliceStable(s.Backlog, func(i, j int) bool { return s.Backlog[i].Time < s.Backlog[j].Time })
+	case NPPS:
+		// higher priority first, if same then earlier arrival
+		sort.SliceStable(s.Backlog, func(i, j int) bool {
+			if s.Backlog[i].Priority == s.Backlog[j].Priority {
+				return s.Backlog[i].Time < s.Backlog[j].Time
+			}
+			return s.Backlog[i].Priority > s.Backlog[j].Priority
+		})
+	case EDF:
+		// earliest deadline first
+		sort.SliceStable(s.Backlog, func(i, j int) bool { return s.Backlog[i].Deadline < s.Backlog[j].Deadline })
+	case WRR:
+		// weighted round-robin by sampling proportional to weight over one step
+		// build cumulative weights
+		wSum := 0.0
+		for _, r := range s.Backlog { wSum += r.Weight }
+		if wSum == 0 { wSum = 1 }
+		pick := rng.Float64() * wSum
+		acc := 0.0
+		idx := 0
+		for i, r := range s.Backlog {
+			acc += r.Weight
+			if acc >= pick { idx = i; break }
+		}
+		// chosen request to front
+		if idx != 0 {
+			chosen := s.Backlog[idx]
+			copy(s.Backlog[1:idx+1], s.Backlog[0:idx])
+			s.Backlog[0] = chosen
+		}
+	}
+	// Return a small batch to attempt service this step 
+	batch := 3
+	if len(s.Backlog) < batch { batch = len(s.Backlog) }
+	return s.Backlog[:batch]
 }
 
 
