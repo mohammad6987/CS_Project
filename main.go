@@ -1,4 +1,4 @@
-package main
+package x
 
 import (
 	"bufio"
@@ -48,6 +48,10 @@ var (
 )
 
 
+// ==========================
+// Model & Simulation Types
+// ==========================
+
 type SourceType int
 
 const (
@@ -58,36 +62,36 @@ const (
 type EnergySource struct {
 	Name        string
 	Type        SourceType
-	CapacityKW  float64  
-	AvailableKW float64  // dynamic available power 
-	Efficiency  float64  
-	FailureProb float64  
-	DownUntil   int   // timestep until which source is down 
+	CapacityKW  float64  // max instantaneous power available (kW)
+	AvailableKW float64  // dynamic available power (for renewables)
+	Efficiency  float64  // efficiency (0..1)
+	FailureProb float64  // probability of outage per step
+	DownUntil   int      // timestep until which source is down
 }
 
 type Battery struct {
 	CapacityKWh float64
 	LevelKWh    float64
-	ChargeRate  float64  
-	DischargeRate float64 
+	ChargeRate  float64  // kW
+	DischargeRate float64 // kW
 	Efficiency  float64
 }
 
 type Consumer struct {
 	ID         int
-	Priority   int     // for NPPS
-	Weight     float64 // for WRR 
-	Deadline   int     // for EDF
+	Priority   int     // higher means more priority (for NPPS)
+	Weight     float64 // for WRR (group weight)
+	Deadline   int     // absolute timestep deadline (for EDF)
 }
 
 type Request struct {
-	Time       int     // arrival
+	Time       int     // arrival time
 	ConsumerID int
-	AmountKWh  float64 
+	AmountKWh  float64 // energy needed
 	Priority   int
 	Weight     float64
 	Deadline   int
-	//filled during simulation
+	// metrics filled during simulation
 	StartTime int
 	EndTime   int
 	ServedKW  float64
@@ -130,8 +134,6 @@ type ReqPQ struct {
 	items []*ReqPQItem
 }
 
-
-
 func (pq ReqPQ) Len() int { return len(pq.items) }
 func (pq ReqPQ) Less(i, j int) bool { return pq.items[i].Less(pq.items[i].Req, pq.items[j].Req) }
 func (pq ReqPQ) Swap(i, j int) {
@@ -147,20 +149,22 @@ func (pq *ReqPQ) Pop() any {
 	pq.items = old[0 : n-1]
 	return item
 }
-// all of simulation parameters
+
+// Simulation Parameters
+
 type SimParams struct {
-	LambdaController float64 // λ1: exponential service parameter in controller 
+	LambdaController float64 // λ1: exponential service parameter in controller (not used heavily in this simplified model)
 	LambdaRenewable  float64 // λ2: exponential for renewable availability changes
 	ChiDemand        float64 // χ: Poisson for consumer request arrivals per step
 	OverheadC        float64 // C: overhead (kWh) to route to a specific source
 	ProcDelayT       int     // t: processing delay in steps between requests
 	TotalTime        int     // T: total steps
-	NProcessors      int     // N: processors in controller 
+	NProcessors      int     // N: processors in controller (kept 1 for simplicity)
 	PToSource        float64 // P: probability a request is sent to a particular (renewable/storage) source first
-	TimeStepHours    float64 // conversion of one step to hours 
+	TimeStepHours    float64 // conversion of one step to hours (e.g., 0.25 => 15 minutes)
 }
 
-//simulation modules?
+// Simulation State
 
 type SimState struct {
 	Time       int
@@ -171,12 +175,13 @@ type SimState struct {
 	Completed  []*Request
 	Scheduler  SchedulerType
 	Params     SimParams
+	// Metrics
 	UnservedKWh float64
 }
 
-
-
-
+// ==========================
+// Generators & Utilities
+// ==========================
 
 func newPoisson(r *rand.Rand, rate float64) distuv.Poisson {
 	return distuv.Poisson{Lambda: rate, Src: r}
@@ -188,6 +193,7 @@ func newExp(r *rand.Rand, rate float64) distuv.Exponential {
 
 func clamp(x, lo, hi float64) float64 { if x < lo { return lo }; if x > hi { return hi }; return x }
 
+// Update renewable availability and outages
 func (s *SimState) updateSources(rng *rand.Rand) {
 	for _, src := range s.Sources {
 		if s.Time < src.DownUntil { // in outage
@@ -212,9 +218,7 @@ func (s *SimState) updateSources(rng *rand.Rand) {
 	}
 }
 
-// for now until a csv reader and a dataset is found  
-// uses Poisson number of consumers
-//  requests with random sizes and deadlines
+// Request generation: Poisson number of consumers emit requests with random sizes and deadlines
 func (s *SimState) generateRequests(rng *rand.Rand) {
 	pois := newPoisson(rng, s.Params.ChiDemand)
 	n := int(pois.Rand())
@@ -231,6 +235,9 @@ func (s *SimState) generateRequests(rng *rand.Rand) {
 	}
 }
 
+// ==========================
+// Scheduling Policies
+// ==========================
 
 func (s *SimState) pickNextRequests(rng *rand.Rand) []*Request {
 	if len(s.Backlog) == 0 { return nil }
@@ -269,20 +276,19 @@ func (s *SimState) pickNextRequests(rng *rand.Rand) []*Request {
 			s.Backlog[0] = chosen
 		}
 	}
-	//small batch to attempt service this step 
+	// Return a small batch to attempt service this step
 	batch := 3
 	if len(s.Backlog) < batch { batch = len(s.Backlog) }
 	return s.Backlog[:batch]
 }
 
-
 func (s *SimState) serveBatch(rng *rand.Rand, batch []*Request) {
 	if len(batch) == 0 { return }
 	availKW := 0.0
 	for _, src := range s.Sources { availKW += src.AvailableKW * src.Efficiency }
-
+	// also battery can discharge
 	availKW += math.Min(s.Battery.DischargeRate, s.Battery.LevelKWh/s.Params.TimeStepHours) * s.Battery.Efficiency
-	
+
 	remainingKWh := availKW * s.Params.TimeStepHours
 	for _, req := range batch {
 		if req.StartTime < 0 { req.StartTime = s.Time }
@@ -297,17 +303,17 @@ func (s *SimState) serveBatch(rng *rand.Rand, batch []*Request) {
 		}
 		if remainingKWh <= 1e-9 { break }
 	}
-	// Update sources/battery consumption proportional 
+	// Update sources/battery consumption proportional (simple):
 	consumedKWh := availKW*s.Params.TimeStepHours - remainingKWh
-	// discharge battery up to need
+	// first discharge battery up to need
 	if consumedKWh > 0 {
 		fromBatt := math.Min(consumedKWh, math.Min(s.Battery.DischargeRate*s.Params.TimeStepHours, s.Battery.LevelKWh))
 		s.Battery.LevelKWh -= fromBatt
 		consumedKWh -= fromBatt
 	}
-	// reduce renewable/non-renewable available power notionally
+	// reduce renewable/non-renewable available power notionally (not tracked per-source here)
 	_ = consumedKWh
-	// charge battery if excess from renewables 
+	// charge battery if excess from renewables (simple heuristic)
 	genKW := 0.0
 	for _, src := range s.Sources { if src.Type==Renewable { genKW += src.AvailableKW*src.Efficiency } }
 	excessKWh := math.Max(0, genKW*s.Params.TimeStepHours - (availKW*s.Params.TimeStepHours - remainingKWh))
@@ -323,7 +329,7 @@ func (s *SimState) serveBatch(rng *rand.Rand, batch []*Request) {
 			continue
 		}
 		if s.Time+1 > r.Deadline {
-			// missed deadline 
+			// missed deadline => unserved energy counted
 			s.UnservedKWh += math.Max(0, r.AmountKWh)
 			continue
 		}
@@ -340,10 +346,11 @@ func (s *SimState) step(rng *rand.Rand) {
 	s.Time++
 }
 
+// Run simulation and compute KPIs: average wait, unserved percentage, renewable fraction
 func (s *SimState) run(rng *rand.Rand) map[string]float64 {
 	startBatt := s.Battery.LevelKWh
 	for s.Time < s.Params.TotalTime { s.step(rng) }
-	
+	// KPIs
 	var waitSum float64
 	for _, r := range s.Completed {
 		waitSum += float64(r.EndTime - r.Time)
@@ -366,7 +373,7 @@ func (s *SimState) run(rng *rand.Rand) map[string]float64 {
 		"backlog_size": float64(len(s.Backlog)),
 	}
 
-	// updating prometheus metrics
+
     schedulerName := s.Scheduler.String()
     avgWaitSteps.WithLabelValues(schedulerName).Set(results["avg_wait_steps"])
     completedReqs.WithLabelValues(schedulerName).Set(results["completed_reqs"])
@@ -376,8 +383,14 @@ func (s *SimState) run(rng *rand.Rand) map[string]float64 {
     return results
 }
 
-//Linear Regression 
+// ==========================
+// ML: Forecasting (LR, RF, NN)
+// ==========================
+
+// ---- Linear Regression (ordinary least squares) ----
+
 func linearRegressionFit(X *mat.Dense, y *mat.VecDense, l2 float64) *mat.VecDense {
+    // Solve (X^T X + l2 I) beta = X^T y
     var xt mat.Dense
     xt.Mul(X.T(), X)
     n, _ := xt.Dims()
@@ -385,6 +398,7 @@ func linearRegressionFit(X *mat.Dense, y *mat.VecDense, l2 float64) *mat.VecDens
         xt.Set(i, i, xt.At(i,i)+l2)
     }
 
+    // Wrap as SymDense for Cholesky
     sym := mat.NewSymDense(n, nil)
     for i := 0; i < n; i++ {
         for j := 0; j <= i; j++ {
@@ -402,6 +416,7 @@ func linearRegressionFit(X *mat.Dense, y *mat.VecDense, l2 float64) *mat.VecDens
         return &beta
     }
 
+    // fallback to SVD (same as before) ...
     var svd mat.SVD
     _ = svd.Factorize(X, mat.SVDThin)
     var u, v mat.Dense
@@ -425,31 +440,29 @@ func linearRegressionFit(X *mat.Dense, y *mat.VecDense, l2 float64) *mat.VecDens
     return &beta
 }
 
+
 func linearRegressionPredict(X *mat.Dense, beta *mat.VecDense) *mat.VecDense {
 	var yhat mat.VecDense
 	yhat.MulVec(X, beta)
 	return &yhat
 }
 
+// ---- CART Decision Tree (minimal) ----
 
-
-
-
-//Random forest functiosn
 type TreeNode struct {
 	Feature int
 	Thresh  float64
 	Left    *TreeNode
 	Right   *TreeNode
 	Leaf    bool
-	Value   float64 
+	Value   float64 // for regression; for classification use majority vote (not fully implemented here)
 }
 
 type RFParams struct {
 	NTrees int
 	MaxDepth int
 	MinSamples int
-	FeatureSample float64 
+	FeatureSample float64 // fraction of features to sample at each split
 	Seed int64
 }
 
@@ -472,6 +485,7 @@ func buildTree(X [][]float64, y []float64, depth, maxDepth, minSamples int, mtry
 	}
 	nSamples := len(y)
 	nFeatures := len(X[0])
+	// feature subset
 	featIdx := rngPerm(rng, nFeatures)
 	featIdx = featIdx[:mtry]
 	bestFeat := -1
@@ -480,6 +494,7 @@ func buildTree(X [][]float64, y []float64, depth, maxDepth, minSamples int, mtry
 	bestLeftX, bestRightX := [][]float64{}, [][]float64{}
 	bestLeftY, bestRightY := []float64{}, []float64{}
 	for _, f := range featIdx {
+		// candidate thresholds: use value quartiles
 		vals := make([]float64, nSamples)
 		for i := range X { vals[i] = X[i][f] }
 		sort.Float64s(vals)
@@ -519,6 +534,7 @@ func (rf *RandomForest) Fit(X [][]float64, y []float64) {
 	mtry := int(math.Max(1, math.Round(float64(nFeatures)*rf.Params.FeatureSample)))
 	rf.Trees = nil
 	for t := 0; t < rf.Params.NTrees; t++ {
+		// bootstrap sample
 		n := len(y)
 		bx := make([][]float64, n)
 		by := make([]float64, n)
@@ -537,7 +553,6 @@ func (rf *RandomForest) Predict(X [][]float64) []float64 {
 	}
 	return out
 }
-
 
 
 //multi-layer perceptron
@@ -670,7 +685,9 @@ func (m *MLP) Predict(X [][]float64) []float64 {
 	return out
 }
 
-
+// ==========================
+// Clustering: KMeans + DBSCAN (simple)
+// ==========================
 
 func KMeans(X [][]float64, k int, iters int, seed int64) ([]int, [][]float64) {
 	rng := rand.New(rand.NewSource(seed))
@@ -738,12 +755,9 @@ func regionQuery(X [][]float64, i int, eps float64) []int {
 
 func euclid2(a,b []float64) float64 { s:=0.0; for i:=range a{ d:=a[i]-b[i]; s+=d*d }; return s }
 
-
-
-
-
-
-
+// ==========================
+// RL: Q-Learning over Schedulers
+// ==========================
 
 type QAgent struct {
 	Q map[[3]int]map[SchedulerType]float64 // state buckets -> action values
@@ -822,17 +836,15 @@ func observeState(s *SimState) [3]int {
 	}
 }
 
-
-
-
-
+// ==========================
+// CSV Utilities & Metrics
+// ==========================
 
 type Dataset struct {
 	Header []string
 	X [][]float64
-	Y []float64 
+	Y []float64 // optional target
 }
-
 
 func loadCSV(path string, target string) (*Dataset, error) {
 	f, err := os.Open(path); if err != nil { return nil, err }
@@ -842,11 +854,13 @@ func loadCSV(path string, target string) (*Dataset, error) {
 	rows, err := r.ReadAll(); if err != nil { return nil, err }
 	if len(rows) < 2 { return nil, errors.New("csv too small") }
 	head := rows[0]
+	// detect target col
 	tIdx := -1
 	if target != "" {
 		for i, h := range head { if strings.EqualFold(strings.TrimSpace(h), target) { tIdx = i; break } }
 		if tIdx == -1 { return nil, fmt.Errorf("target %s not found", target) }
 	}
+	// parse numeric cols
 	nCols := len(head)
 	isNum := make([]bool, nCols)
 	cols := make([][]float64, nCols)
@@ -860,7 +874,7 @@ func loadCSV(path string, target string) (*Dataset, error) {
 			}
 		}
 	}
-	
+	// build X,Y aligned (drop non-numeric and rows with NaN)
 	numIdx := []int{}
 	for j:=0;j<nCols;j++{ if isNum[j] && j!=tIdx { numIdx = append(numIdx, j) } }
 	X := [][]float64{}
@@ -885,8 +899,6 @@ func loadCSV(path string, target string) (*Dataset, error) {
 	return &Dataset{Header: head, X: X, Y: Y}, nil
 }
 
-
-
 func rmse(y, yhat []float64) float64 {
 	s := 0.0; n := len(y)
 	for i:=0;i<n;i++{ d:=y[i]-yhat[i]; s += d*d }
@@ -899,27 +911,296 @@ func mae(y, yhat []float64) float64 {
 	return s/float64(n)
 }
 
+// ==========================
+// CLI & Main
+// ==========================
 
+func printHelp() {
+	fmt.Println("\nAvailable Commands:")
+	fmt.Println("  simulate <scheduler> - Run simulation with a scheduler (fifo|npps|wrr|edf|ql)")
+	fmt.Println("  ml forecast -csv <path> -target <col> - Run forecasting models")
+	fmt.Println("  ml cluster -csv <path> -k <num>      - Run clustering algorithms")
+	fmt.Println("  set <param> <value>  - Set a simulation parameter (e.g., set T 500)")
+	fmt.Println("  status               - Show current simulation parameters")
+	fmt.Println("  help                 - Show this help message")
+	fmt.Println("  exit                 - Exit the application")
+}
+
+func main() {
+	// --- Metrics Server Setup ---
+	http.Handle("/metrics", promhttp.Handler())
+	go func() {
+		log.Println("Metrics server starting on :2112")
+		if err := http.ListenAndServe(":2112", nil); err != nil {
+			log.Printf("Metrics server failed: %v", err)
+		}
+	}()
+
+	// --- Default Simulation Parameters ---
+	params := &SimParams{
+		LambdaController: 0.5,
+		LambdaRenewable:  0.5,
+		ChiDemand:        2.0,
+		OverheadC:        0.02,
+		ProcDelayT:       1,
+		TotalTime:        200,
+		NProcessors:      1,
+		PToSource:        0.5,
+		TimeStepHours:    0.25,
+	}
+	var seed int64 = 7
+
+	fmt.Println("Interactive Smart Grid Simulator. Type 'help' for commands.")
+	scanner := bufio.NewScanner(os.Stdin)
+
+	// --- Main Command Loop ---
+	for {
+		fmt.Print("> ")
+		if !scanner.Scan() {
+			break
+		}
+		line := scanner.Text()
+		parts := strings.Fields(line)
+		if len(parts) == 0 {
+			continue
+		}
+
+		command := parts[0]
+		args := parts[1:]
+
+		switch command {
+		case "help":
+			printHelp()
+
+		case "exit", "quit":
+			fmt.Println("Exiting.")
+			return
+
+		case "status":
+			fmt.Println("Current Simulation Parameters:")
+			fmt.Printf("  Seed: %d\n", seed)
+			fmt.Printf("  T (TotalTime): %d\n", params.TotalTime)
+			fmt.Printf("  chi (ChiDemand): %.2f\n", params.ChiDemand)
+			fmt.Printf("  lambdaRen (LambdaRenewable): %.2f\n", params.LambdaRenewable)
+			fmt.Printf("  overhead (OverheadC): %.3f\n", params.OverheadC)
+			fmt.Printf("  dt (TimeStepHours): %.2f\n", params.TimeStepHours)
+
+		case "set":
+			if len(args) != 2 {
+				fmt.Println("Usage: set <param> <value>")
+				continue
+			}
+			param, valueStr := args[0], args[1]
+			switch strings.ToLower(param) {
+			case "t":
+				if v, err := strconv.Atoi(valueStr); err == nil {
+					params.TotalTime = v
+					fmt.Printf("Set TotalTime to %d\n", v)
+				} else {
+					fmt.Println("Invalid integer value for T")
+				}
+			case "chi":
+				if v, err := strconv.ParseFloat(valueStr, 64); err == nil {
+					params.ChiDemand = v
+					fmt.Printf("Set ChiDemand to %.2f\n", v)
+				} else {
+					fmt.Println("Invalid float value for chi")
+				}
+			case "lambdaren":
+				if v, err := strconv.ParseFloat(valueStr, 64); err == nil {
+					params.LambdaRenewable = v
+					fmt.Printf("Set LambdaRenewable to %.2f\n", v)
+				} else {
+					fmt.Println("Invalid float value for lambdaRen")
+				}
+			case "overhead":
+				if v, err := strconv.ParseFloat(valueStr, 64); err == nil {
+					params.OverheadC = v
+					fmt.Printf("Set OverheadC to %.3f\n", v)
+				} else {
+					fmt.Println("Invalid float value for overhead")
+				}
+			case "dt":
+				if v, err := strconv.ParseFloat(valueStr, 64); err == nil {
+					params.TimeStepHours = v
+					fmt.Printf("Set TimeStepHours to %.2f\n", v)
+				} else {
+					fmt.Println("Invalid float value for dt")
+				}
+			case "seed":
+				if v, err := strconv.ParseInt(valueStr, 10, 64); err == nil {
+					seed = v
+					fmt.Printf("Set seed to %d\n", v)
+				} else {
+					fmt.Println("Invalid integer value for seed")
+				}
+			default:
+				fmt.Println("Unknown parameter. Use: T, chi, lambdaRen, overhead, dt, seed")
+			}
+
+		case "simulate":
+			if len(args) < 1 {
+				fmt.Println("Usage: simulate <scheduler>")
+				continue
+			}
+			scheduler := args[0]
+			rng := rand.New(rand.NewSource(seed))
+
+			base := &SimState{
+				Sources: []*EnergySource{
+					{Name: "Solar", Type: Renewable, CapacityKW: 8, AvailableKW: 8, Efficiency: 0.95, FailureProb: 0.01},
+					{Name: "Grid", Type: NonRenewable, CapacityKW: 10, AvailableKW: 10, Efficiency: 0.98, FailureProb: 0.005},
+				},
+				Battery:   &Battery{CapacityKWh: 20, LevelKWh: 10, ChargeRate: 4, DischargeRate: 4, Efficiency: 0.92},
+				Consumers: []Consumer{{ID: 1, Priority: 2, Weight: 1.0}, {ID: 2, Priority: 3, Weight: 2.0}, {ID: 3, Priority: 1, Weight: 1.5}},
+				Params:    *params,
+			}
+
+			if scheduler == "ql" {
+				fmt.Println("Training Q-Learning agent...")
+				agent := trainQLearning(base, 25, params.TotalTime, seed)
+				fmt.Println("Deploying QL policy...")
+				s := *base
+				s.Time = 0
+				s.Backlog = nil
+				s.Completed = nil
+				s.UnservedKWh = 0
+				for s.Time < s.Params.TotalTime {
+					st := observeState(&s)
+					bestA := FIFO
+					bestV := math.Inf(-1)
+					for _, a := range []SchedulerType{FIFO, NPPS, WRR, EDF} {
+						v := agent.Q[st][a]
+						if v > bestV {
+							bestV = v
+							bestA = a
+						}
+					}
+					s.Scheduler = bestA
+					s.step(rng)
+				}
+				kpis := s.runStatsOnly()
+				fmt.Println("QL policy KPIs:", kpis)
+			} else {
+				schedMap := map[string]SchedulerType{"fifo": FIFO, "npps": NPPS, "wrr": WRR, "edf": EDF}
+				sType, ok := schedMap[strings.ToLower(scheduler)]
+				if !ok {
+					fmt.Printf("Unknown scheduler: %s\n", scheduler)
+					continue
+				}
+				base.Scheduler = sType
+				kpis := base.run(rng)
+				fmt.Println("Scheduler:", sType, "KPIs:", kpis)
+			}
+
+		case "ml":
+			if len(args) < 1 {
+				fmt.Println("Usage: ml <task> [options]")
+				continue
+			}
+			task := args[0]
+			mlArgs := args[1:]
+			// Simple flag parsing
+			argMap := make(map[string]string)
+			for i := 0; i < len(mlArgs); i++ {
+				if strings.HasPrefix(mlArgs[i], "-") && i+1 < len(mlArgs) {
+					argMap[mlArgs[i]] = mlArgs[i+1]
+					i++
+				}
+			}
+			csvPath, ok := argMap["-csv"]
+			if !ok {
+				fmt.Println("ML task requires -csv <path>")
+				continue
+			}
+
+			switch task {
+			case "forecast":
+				targetCol, ok := argMap["-target"]
+				if !ok {
+					fmt.Println("Forecast task requires -target <col>")
+					continue
+				}
+				ds, err := loadCSV(csvPath, targetCol)
+				if err != nil {
+					fmt.Println("Error:", err)
+					continue
+				}
+				if len(ds.Y) == 0 {
+					fmt.Println("Target column is empty or could not be parsed.")
+					continue
+				}
+
+				n := len(ds.Y)
+				split := int(0.8 * float64(n))
+				Xtr, ytr := slice2d(ds.X, 0, split), ds.Y[:split]
+				Xte, yte := slice2d(ds.X, split, n), ds.Y[split:]
+
+				XtrM := mat.NewDense(len(Xtr), len(Xtr[0]), flatten2d(Xtr))
+				ytrV := mat.NewVecDense(len(ytr), ytr)
+				beta := linearRegressionFit(XtrM, ytrV, 1e-6)
+				XteM := mat.NewDense(len(Xte), len(Xte[0]), flatten2d(Xte))
+				yhatLR := linearRegressionPredict(XteM, beta)
+				fmt.Printf("LR RMSE=%.4f MAE=%.4f\n", rmse(yte, vecToSlice(yhatLR)), mae(yte, vecToSlice(yhatLR)))
+
+				rf := &RandomForest{Params: RFParams{NTrees: 30, MaxDepth: 8, MinSamples: 5, FeatureSample: 0.6, Seed: seed}}
+				rf.Fit(Xtr, ytr)
+				yhatRF := rf.Predict(Xte)
+				fmt.Printf("RF RMSE=%.4f MAE=%.4f\n", rmse(yte, yhatRF), mae(yte, yhatRF))
+
+				mlp := NewMLP(len(Xtr[0]), 16, rand.New(rand.NewSource(seed)))
+				mlp.LR = 0.01
+				mlp.Train(Xtr, ytr, 30, 64)
+				yhatNN := mlp.Predict(Xte)
+				fmt.Printf("NN RMSE=%.4f MAE=%.4f\n", rmse(yte, yhatNN), mae(yte, yhatNN))
+
+			case "cluster":
+				kStr, ok := argMap["-k"]
+				kClusters := 3
+				if ok {
+					if k, err := strconv.Atoi(kStr); err == nil {
+						kClusters = k
+					}
+				}
+				ds, err := loadCSV(csvPath, "")
+				if err != nil {
+					fmt.Println("Error:", err)
+					continue
+				}
+				labels, _ := KMeans(ds.X, kClusters, 50, seed)
+				eps := 0.5
+				if len(ds.X) > 1 {
+					eps = math.Sqrt(euclid2(ds.X[0], ds.X[len(ds.X)/2])) / 2.0
+				}
+				db := DBSCAN(ds.X, eps, 5)
+				fmt.Printf("KMeans (k=%d) labels (first 30): %v\n", kClusters, labels[:min(30, len(labels))])
+				fmt.Printf("DBSCAN (eps=%.2f) labels (first 30): %v\n", eps, db[:min(30, len(db))])
+			default:
+				fmt.Println("Unknown ML task. Use 'forecast' or 'cluster'.")
+			}
+
+		default:
+			fmt.Println("Unknown command. Type 'help' for a list of commands.")
+		}
+	}
+
+	if err := scanner.Err(); err != nil {
+		log.Println("Error reading input:", err)
+	}
+}
+
+func (s *SimState) runStatsOnly() map[string]float64 {
+	// compute KPIs on completed/queues without further stepping
+	var waitSum float64
+	for _, r := range s.Completed { waitSum += float64(r.EndTime - r.Time) }
+	avgWait := 0.0
+	if len(s.Completed) > 0 { avgWait = waitSum / float64(len(s.Completed)) }
+	served := float64(len(s.Completed))
+	return map[string]float64{ "avg_wait_steps": avgWait, "served_reqs": served, "unserved_kwh": s.UnservedKWh }
+}
+
+// helpers
 func slice2d(x [][]float64, a, b int) [][]float64 { y := make([][]float64, b-a); for i:=a;i<b;i++{ y[i-a] = x[i] }; return y }
 func flatten2d(x [][]float64) []float64 { if len(x)==0 { return nil }; r:=len(x); c:=len(x[0]); out:=make([]float64,0,r*c); for i:=0;i<r;i++{ out=append(out, x[i]...) }; return out }
 func vecToSlice(v *mat.VecDense) []float64 { n:=v.Len(); out:=make([]float64,n); for i:=0;i<n;i++{ out[i]=v.AtVec(i) }; return out }
 func min(a,b int) int { if a<b { return a }; return b }
-
-
-
-
-
-
-
-
-func main(){
-	http.Handle("/metrics", promhttp.Handler())
-    go func() {
-        log.Println("Metrics server starting on :2112")
-        if err := http.ListenAndServe(":2112", nil); err != nil {
-            log.Fatalf("Metrics server failed: %v", err)
-        }
-    }()
-
-	time.Sleep(1000)
-}
