@@ -5,11 +5,13 @@ import (
 	"math"
 	"math/rand"
 	"net/http"
+	"sort"
 	"time"
 
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promauto"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
+	"gonum.org/v1/gonum/mat"
 	"gonum.org/v1/gonum/stat/distuv"
 )
 
@@ -330,7 +332,96 @@ func (s *SimState) step(rng *rand.Rand) {
 	s.Time++
 }
 
+func (s *SimState) run(rng *rand.Rand) map[string]float64 {
+	startBatt := s.Battery.LevelKWh
+	for s.Time < s.Params.TotalTime { s.step(rng) }
+	
+	var waitSum float64
+	for _, r := range s.Completed {
+		waitSum += float64(r.EndTime - r.Time)
+	}
+	avgWait := 0.0
+	if len(s.Completed) > 0 { avgWait = waitSum / float64(len(s.Completed)) }
+	servedKWh := 0.0
+	for _, r := range s.Completed { servedKWh += r.AmountKWh + s.Params.OverheadC } // amount requested initially ≈ served
+	// crude: estimate renewable production vs total consumption via availability
+	renKW := 0.0; totKW := 0.0
+	for _, src := range s.Sources { if src.Type==Renewable { renKW += src.CapacityKW*src.Efficiency } ; totKW += src.CapacityKW*src.Efficiency }
+	renFrac := 0.0
+	if totKW > 0 { renFrac = renKW / totKW }
+	results := map[string]float64{
+		"avg_wait_steps": avgWait,
+		"completed_reqs": float64(len(s.Completed)),
+		"unserved_kwh": s.UnservedKWh,
+		"battery_delta_kwh": s.Battery.LevelKWh - startBatt,
+		"renewable_frac_capacity": renFrac,
+		"backlog_size": float64(len(s.Backlog)),
+	}
 
+	// updating prometheus metrics
+    schedulerName := s.Scheduler.String()
+    avgWaitSteps.WithLabelValues(schedulerName).Set(results["avg_wait_steps"])
+    completedReqs.WithLabelValues(schedulerName).Set(results["completed_reqs"])
+    unservedKWh.WithLabelValues(schedulerName).Set(results["unserved_kwh"])
+    backlogSize.WithLabelValues(schedulerName).Set(results["backlog_size"])
+
+    return results
+}
+
+//Linear Regression 
+func linearRegressionFit(X *mat.Dense, y *mat.VecDense, l2 float64) *mat.VecDense {
+    var xt mat.Dense
+    xt.Mul(X.T(), X)
+    n, _ := xt.Dims()
+    for i := 0; i < n; i++ {
+        xt.Set(i, i, xt.At(i,i)+l2)
+    }
+
+    sym := mat.NewSymDense(n, nil)
+    for i := 0; i < n; i++ {
+        for j := 0; j <= i; j++ {
+            sym.SetSym(i, j, xt.At(i, j))
+        }
+    }
+
+    var xty mat.VecDense
+    xty.MulVec(X.T(), y)
+
+    var chol mat.Cholesky
+    if ok := chol.Factorize(sym); ok {
+        var beta mat.VecDense
+        _ = chol.SolveVecTo(&beta, &xty)
+        return &beta
+    }
+
+    var svd mat.SVD
+    _ = svd.Factorize(X, mat.SVDThin)
+    var u, v mat.Dense
+    var sVals []float64
+    svd.UTo(&u)
+    svd.VTo(&v)
+    s := svd.Values(nil)
+    sVals = append(sVals, s...)
+    var uty mat.VecDense
+    uty.MulVec(u.T(), y)
+    for i := 0; i < len(sVals); i++ {
+        val := sVals[i]
+        if val > 1e-12 {
+            uty.SetVec(i, uty.AtVec(i)/val)
+        } else {
+            uty.SetVec(i, 0)
+        }
+    }
+    var beta mat.VecDense
+    beta.MulVec(&v, &uty)
+    return &beta
+}
+
+func linearRegressionPredict(X *mat.Dense, beta *mat.VecDense) *mat.VecDense {
+	var yhat mat.VecDense
+	yhat.MulVec(X, beta)
+	return &yhat
+}
 
 
 func main(){
