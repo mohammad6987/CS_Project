@@ -823,17 +823,7 @@ func observeState(s *SimState) [3]int {
 }
 
 
-func main(){
-	http.Handle("/metrics", promhttp.Handler())
-    go func() {
-        log.Println("Metrics server starting on :2112")
-        if err := http.ListenAndServe(":2112", nil); err != nil {
-            log.Fatalf("Metrics server failed: %v", err)
-        }
-    }()
 
-	time.Sleep(1000)
-}
 
 
 
@@ -907,4 +897,29 @@ func mae(y, yhat []float64) float64 {
 	s := 0.0; n := len(y)
 	for i:=0;i<n;i++{ s += math.Abs(y[i]-yhat[i]) }
 	return s/float64(n)
+}
+
+
+func slice2d(x [][]float64, a, b int) [][]float64 { y := make([][]float64, b-a); for i:=a;i<b;i++{ y[i-a] = x[i] }; return y }
+func flatten2d(x [][]float64) []float64 { if len(x)==0 { return nil }; r:=len(x); c:=len(x[0]); out:=make([]float64,0,r*c); for i:=0;i<r;i++{ out=append(out, x[i]...) }; return out }
+func vecToSlice(v *mat.VecDense) []float64 { n:=v.Len(); out:=make([]float64,n); for i:=0;i<n;i++{ out[i]=v.AtVec(i) }; return out }
+func min(a,b int) int { if a<b { return a }; return b }
+
+
+
+
+
+
+
+
+func main(){
+	http.Handle("/metrics", promhttp.Handler())
+    go func() {
+        log.Println("Metrics server starting on :2112")
+        if err := http.ListenAndServe(":2112", nil); err != nil {
+            log.Fatalf("Metrics server failed: %v", err)
+        }
+    }()
+
+	time.Sleep(1000)
 }
