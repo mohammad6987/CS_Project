@@ -12,6 +12,7 @@ import (
 	"github.com/prometheus/client_golang/prometheus/promauto"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"gonum.org/v1/gonum/mat"
+	"gonum.org/v1/gonum/stat"
 	"gonum.org/v1/gonum/stat/distuv"
 )
 
@@ -421,6 +422,113 @@ func linearRegressionPredict(X *mat.Dense, beta *mat.VecDense) *mat.VecDense {
 	var yhat mat.VecDense
 	yhat.MulVec(X, beta)
 	return &yhat
+}
+
+
+
+
+
+//Random forest functiosn
+type TreeNode struct {
+	Feature int
+	Thresh  float64
+	Left    *TreeNode
+	Right   *TreeNode
+	Leaf    bool
+	Value   float64 
+}
+
+type RFParams struct {
+	NTrees int
+	MaxDepth int
+	MinSamples int
+	FeatureSample float64 
+	Seed int64
+}
+
+type RandomForest struct {
+	Trees []*TreeNode
+	Params RFParams
+}
+
+func variance(y []float64) float64 {
+	if len(y)==0 { return 0 }
+	m := stat.Mean(y, nil)
+	v := 0.0
+	for _, t := range y { d:=t-m; v+=d*d }
+	return v/float64(len(y))
+}
+
+func buildTree(X [][]float64, y []float64, depth, maxDepth, minSamples int, mtry int, rng *rand.Rand) *TreeNode {
+	if depth >= maxDepth || len(y) <= minSamples { // leaf
+		return &TreeNode{Leaf:true, Value: stat.Mean(y, nil)}
+	}
+	nSamples := len(y)
+	nFeatures := len(X[0])
+	featIdx := rngPerm(rng, nFeatures)
+	featIdx = featIdx[:mtry]
+	bestFeat := -1
+	bestThresh := 0.0
+	bestScore := math.Inf(1)
+	bestLeftX, bestRightX := [][]float64{}, [][]float64{}
+	bestLeftY, bestRightY := []float64{}, []float64{}
+	for _, f := range featIdx {
+		vals := make([]float64, nSamples)
+		for i := range X { vals[i] = X[i][f] }
+		sort.Float64s(vals)
+		cands := []float64{vals[nSamples/4], vals[nSamples/2], vals[3*nSamples/4]}
+		for _, th := range cands {
+			lx, rx := [][]float64{}, [][]float64{}
+			ly, ry := []float64{}, []float64{}
+			for i := range X {
+				if X[i][f] <= th { lx = append(lx, X[i]); ly = append(ly, y[i]) } else { rx = append(rx, X[i]); ry = append(ry, y[i]) }
+			}
+			if len(lx)==0 || len(rx)==0 { continue }
+			score := variance(ly)*float64(len(ly)) + variance(ry)*float64(len(ry))
+			if score < bestScore {
+				bestScore = score; bestFeat = f; bestThresh = th
+				bestLeftX, bestRightX = lx, rx
+				bestLeftY, bestRightY = ly, ry
+			}
+		}
+	}
+	if bestFeat == -1 { return &TreeNode{Leaf:true, Value: stat.Mean(y, nil)} }
+	left := buildTree(bestLeftX, bestLeftY, depth+1, maxDepth, minSamples, mtry, rng)
+	right := buildTree(bestRightX, bestRightY, depth+1, maxDepth, minSamples, mtry, rng)
+	return &TreeNode{Feature: bestFeat, Thresh: bestThresh, Left:left, Right:right}
+}
+
+func predictTree(t *TreeNode, x []float64) float64 {
+	if t.Leaf { return t.Value }
+	if x[t.Feature] <= t.Thresh { return predictTree(t.Left, x) }
+	return predictTree(t.Right, x)
+}
+
+func rngPerm(rng *rand.Rand, n int) []int { p := rng.Perm(n); return append([]int(nil), p...) }
+
+func (rf *RandomForest) Fit(X [][]float64, y []float64) {
+	rng := rand.New(rand.NewSource(rf.Params.Seed))
+	nFeatures := len(X[0])
+	mtry := int(math.Max(1, math.Round(float64(nFeatures)*rf.Params.FeatureSample)))
+	rf.Trees = nil
+	for t := 0; t < rf.Params.NTrees; t++ {
+		n := len(y)
+		bx := make([][]float64, n)
+		by := make([]float64, n)
+		for i := 0; i < n; i++ { idx := rng.Intn(n); bx[i] = X[idx]; by[i] = y[idx] }
+		tree := buildTree(bx, by, 0, rf.Params.MaxDepth, rf.Params.MinSamples, mtry, rng)
+		rf.Trees = append(rf.Trees, tree)
+	}
+}
+
+func (rf *RandomForest) Predict(X [][]float64) []float64 {
+	out := make([]float64, len(X))
+	for i := range X {
+		s := 0.0
+		for _, t := range rf.Trees { s += predictTree(t, X[i]) }
+		out[i] = s / float64(len(rf.Trees))
+	}
+	return out
 }
 
 
