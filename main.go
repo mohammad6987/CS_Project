@@ -532,6 +532,141 @@ func (rf *RandomForest) Predict(X [][]float64) []float64 {
 }
 
 
+
+//multi-layer perceptron
+type MLP struct {
+	W1, W2 *mat.Dense // shapes: (d,h), (h,1)
+	B1, B2 *mat.VecDense
+	H int
+	LR float64
+	Beta1, Beta2, Eps float64
+	mW1, vW1, mW2, vW2 *mat.Dense
+	mB1, vB1, mB2, vB2 *mat.VecDense
+	step int
+}
+
+func NewMLP(d, h int, rng *rand.Rand) *MLP {
+	w1 := mat.NewDense(d, h, nil)
+	w2 := mat.NewDense(h, 1, nil)
+	for i:=0;i<d;i++{ for j:=0;j<h;j++{ w1.Set(i,j, rng.NormFloat64()*0.1) } }
+	for i:=0;i<h;i++{ w2.Set(i,0, rng.NormFloat64()*0.1) }
+	return &MLP{
+		W1:w1, W2:w2, B1: mat.NewVecDense(h, nil), B2: mat.NewVecDense(1, nil), H:h,
+		LR: 0.01, Beta1:0.9, Beta2:0.999, Eps:1e-8,
+		mW1: mat.NewDense(d,h,nil), vW1: mat.NewDense(d,h,nil), mW2: mat.NewDense(h,1,nil), vW2: mat.NewDense(h,1,nil),
+		mB1: mat.NewVecDense(h,nil), vB1: mat.NewVecDense(h,nil), mB2: mat.NewVecDense(1,nil), vB2: mat.NewVecDense(1,nil),
+	}
+}
+
+func relu(x float64) float64 { if x>0 {return x}; return 0 }
+func reluDeriv(x float64) float64 { if x>0 {return 1}; return 0 }
+
+func (m *MLP) Train(X [][]float64, y []float64, epochs int, batch int) {
+	d := len(X[0])
+	rng := rand.New(rand.NewSource(42))
+	for e:=0; e<epochs; e++ {
+		idx := rng.Perm(len(y))
+		for i:=0; i<len(y); i+=batch {
+			j := int(math.Min(float64(i+batch), float64(len(y))))
+			// assemble batch mats
+			Bx := mat.NewDense(j-i, d, nil)
+			By := mat.NewVecDense(j-i, nil)
+			for r0, p := 0, i; p<j; p, r0 = p+1, r0+1 {
+				for c:=0;c<d;c++{ Bx.Set(r0,c, X[idx[p]][c]) }
+				By.SetVec(r0, y[idx[p]])
+			}
+			m.step++
+			m.stepBatch(Bx, By)
+		}
+	}
+}
+
+func (m *MLP) stepBatch(Bx *mat.Dense, By *mat.VecDense) {
+	// forward
+	n, d := Bx.Dims()
+	_ = d
+	// Z1 = X W1 + b1
+	var Z1 mat.Dense
+	Z1.Mul(Bx, m.W1) // (n,h)
+	for i:=0;i<n;i++{ for j:=0;j<m.H;j++{ Z1.Set(i,j, Z1.At(i,j)+m.B1.AtVec(j)) } }
+	// A1 = relu(Z1)
+	A1 := mat.NewDense(n, m.H, nil)
+	for i:=0;i<n;i++{ for j:=0;j<m.H;j++{ A1.Set(i,j, relu(Z1.At(i,j))) } }
+	// yhat = A1 W2 + b2
+	var yhat mat.Dense
+	yhat.Mul(A1, m.W2) // (n,1)
+	for i:=0;i<n;i++{ yhat.Set(i,0, yhat.At(i,0)+m.B2.AtVec(0)) }
+	// loss = MSE
+	// grads
+	// dL/dyhat = 2*(yhat - y)/n
+	dY := mat.NewDense(n,1,nil)
+	for i:=0;i<n;i++{ dY.Set(i,0, 2*(yhat.At(i,0)-By.AtVec(i))/float64(n)) }
+	// dW2 = A1^T dY; dB2 = sum dY
+	var dW2 mat.Dense; dW2.Mul(A1.T(), dY)
+	dB2 := mat.NewVecDense(1, []float64{0})
+	for i:=0;i<n;i++{ dB2.SetVec(0, dB2.AtVec(0)+dY.At(i,0)) }
+	// dA1 = dY W2^T
+	var dA1 mat.Dense; dA1.Mul(dY, m.W2.T()) // (n,h)
+	// dZ1 = dA1 * relu'(Z1)
+	dZ1 := mat.NewDense(n, m.H, nil)
+	for i:=0;i<n;i++{ for j:=0;j<m.H;j++{ dZ1.Set(i,j, dA1.At(i,j)*reluDeriv(Z1.At(i,j))) } }
+	// dW1 = X^T dZ1; dB1 = sum over rows
+	var dW1 mat.Dense; dW1.Mul(Bx.T(), dZ1)
+	dB1 := mat.NewVecDense(m.H, nil)
+	for j:=0;j<m.H;j++{ s:=0.0; for i:=0;i<n;i++{ s+=dZ1.At(i,j) }; dB1.SetVec(j, s) }
+	// Adam updates
+	adamUpdateDense(m.W1, &dW1, m.mW1, m.vW1, m.step, m.LR, m.Beta1, m.Beta2, m.Eps)
+	adamUpdateDense(m.W2, &dW2, m.mW2, m.vW2, m.step, m.LR, m.Beta1, m.Beta2, m.Eps)
+	adamUpdateVec(m.B1, dB1, m.mB1, m.vB1, m.step, m.LR, m.Beta1, m.Beta2, m.Eps)
+	adamUpdateVec(m.B2, dB2, m.mB2, m.vB2, m.step, m.LR, m.Beta1, m.Beta2, m.Eps)
+}
+
+func adamUpdateDense(W, dW, mW, vW *mat.Dense, t int, lr, b1, b2, eps float64) {
+	r, c := W.Dims()
+	for i:=0;i<r;i++{ for j:=0;j<c;j++{
+		g := dW.At(i,j)
+		mW.Set(i,j, b1*mW.At(i,j) + (1-b1)*g)
+		vW.Set(i,j, b2*vW.At(i,j) + (1-b2)*g*g)
+		mhat := mW.At(i,j)/ (1-math.Pow(b1, float64(t)))
+		vhat := vW.At(i,j)/ (1-math.Pow(b2, float64(t)))
+		W.Set(i,j, W.At(i,j) - lr*mhat/(math.Sqrt(vhat)+eps))
+	} }
+}
+
+func adamUpdateVec(W, dW, mW, vW *mat.VecDense, t int, lr, b1, b2, eps float64) {
+	n := W.Len()
+	for i:=0;i<n;i++{
+		g := dW.AtVec(i)
+		mW.SetVec(i, b1*mW.AtVec(i)+(1-b1)*g)
+		vW.SetVec(i, b2*vW.AtVec(i)+(1-b2)*g*g)
+		mhat := mW.AtVec(i)/(1-math.Pow(b1,float64(t)))
+		vhat := vW.AtVec(i)/(1-math.Pow(b2,float64(t)))
+		W.SetVec(i, W.AtVec(i) - lr*mhat/(math.Sqrt(vhat)+eps))
+	}
+}
+
+func (m *MLP) Predict(X [][]float64) []float64 {
+	out := make([]float64, len(X))
+	for i:=range X {
+		// forward single
+		d := len(X[i])
+		z1 := make([]float64, m.H)
+		for j:=0;j<m.H;j++{
+			s := m.B1.AtVec(j)
+			for k:=0;k<d;k++{ s += X[i][k]*m.W1.At(k,j) }
+			z1[j] = relu(s)
+		}
+		s2 := m.B2.AtVec(0)
+		for j:=0;j<m.H;j++{ s2 += z1[j]*m.W2.At(j,0) }
+		out[i] = s2
+	}
+	return out
+}
+
+
+
+
+
 func main(){
 	http.Handle("/metrics", promhttp.Handler())
     go func() {
