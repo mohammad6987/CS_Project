@@ -46,7 +46,7 @@ type EnergySource struct {
 	Name        string
 	Type        SourceType
 	CapacityKW  float64  
-	AvailableKW float64  // dynamic available power (for renewables)
+	AvailableKW float64  // dynamic available power 
 	Efficiency  float64  
 	FailureProb float64  
 	DownUntil   int      
@@ -133,6 +133,32 @@ func (pq *ReqPQ) Pop() any {
 	item := old[n-1]
 	pq.items = old[0 : n-1]
 	return item
+}
+// all of simulation parameters
+type SimParams struct {
+	LambdaController float64 // λ1: exponential service parameter in controller 
+	LambdaRenewable  float64 // λ2: exponential for renewable availability changes
+	ChiDemand        float64 // χ: Poisson for consumer request arrivals per step
+	OverheadC        float64 // C: overhead (kWh) to route to a specific source
+	ProcDelayT       int     // t: processing delay in steps between requests
+	TotalTime        int     // T: total steps
+	NProcessors      int     // N: processors in controller 
+	PToSource        float64 // P: probability a request is sent to a particular (renewable/storage) source first
+	TimeStepHours    float64 // conversion of one step to hours 
+}
+
+//simulation modules?
+
+type SimState struct {
+	Time       int
+	Sources    []*EnergySource
+	Battery    *Battery
+	Consumers  []Consumer
+	Backlog    []*Request
+	Completed  []*Request
+	Scheduler  SchedulerType
+	Params     SimParams
+	UnservedKWh float64
 }
 
 
