@@ -665,6 +665,74 @@ func (m *MLP) Predict(X [][]float64) []float64 {
 
 
 
+func KMeans(X [][]float64, k int, iters int, seed int64) ([]int, [][]float64) {
+	rng := rand.New(rand.NewSource(seed))
+	n := len(X); d := len(X[0])
+	cent := make([][]float64, k)
+	perm := rng.Perm(n)
+	for i:=0;i<k;i++{ cent[i] = append([]float64(nil), X[perm[i]]...) }
+	assign := make([]int, n)
+	for it:=0; it<iters; it++ {
+		// assign
+		for i:=0;i<n;i++{
+			best, bid := math.Inf(1), 0
+			for c:=0;c<k;c++{ d2:=euclid2(X[i], cent[c]); if d2<best {best=d2; bid=c} }
+			assign[i]=bid
+		}
+		// update
+		cnt := make([]int, k)
+		newc := make([][]float64, k)
+		for c:=0;c<k;c++{ newc[c] = make([]float64, d) }
+		for i:=0;i<n;i++{
+			c := assign[i]
+			cnt[c]++
+			for j:=0;j<d;j++{ newc[c][j]+=X[i][j] }
+		}
+		for c:=0;c<k;c++{ if cnt[c]>0 { for j:=0;j<d;j++{ newc[c][j]/=float64(cnt[c]) } } else { newc[c] = append([]float64(nil), X[rng.Intn(n)]...) } }
+		cent = newc
+	}
+	return assign, cent
+}
+
+func DBSCAN(X [][]float64, eps float64, minPts int) []int {
+	n := len(X)
+	labels := make([]int, n)
+	for i:=range labels { labels[i] = -1 }
+	cid := 0
+	visited := make([]bool, n)
+	for i:=0;i<n;i++{
+		if visited[i] { continue }
+		visited[i]=true
+		neigh := regionQuery(X, i, eps)
+		if len(neigh) < minPts { labels[i] = -2; continue } // noise
+		labels[i] = cid
+		seed := append([]int(nil), neigh...)
+		for len(seed)>0 {
+			j := seed[len(seed)-1]; seed = seed[:len(seed)-1]
+			if !visited[j] {
+				visited[j] = true
+				nn := regionQuery(X, j, eps)
+				if len(nn) >= minPts { seed = append(seed, nn...) }
+			}
+			if labels[j] < 0 { labels[j] = cid }
+		}
+		cid++
+	}
+	return labels
+}
+
+func regionQuery(X [][]float64, i int, eps float64) []int {
+	res := []int{}
+	for j:=0;j<len(X);j++{
+		if euclid2(X[i], X[j]) <= eps*eps { res = append(res, j) }
+	}
+	return res
+}
+
+func euclid2(a,b []float64) float64 { s:=0.0; for i:=range a{ d:=a[i]-b[i]; s+=d*d }; return s }
+
+
+
 
 
 func main(){
