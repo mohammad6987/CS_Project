@@ -37,3 +37,9 @@ Use
 help 
 ```
 for more info in the CLI
+
+
+## Code Structure
+
+- **MLP**: 
+![Alt text](./mlp.png)
