@@ -282,8 +282,7 @@ func (s *SimState) pickNextRequests(rng *rand.Rand) []*Request {
 
 	}
 
-	// Return a small batch to attempt service this step
-	batch := 3
+	batch := min(len(s.Backlog), s.Params.NProcessors*10)
 	if len(s.Backlog) < batch {
 		batch = len(s.Backlog)
 	}
@@ -298,7 +297,7 @@ func (s *SimState) serveBatch(rng *rand.Rand, batch []*Request) {
 	for _, src := range s.Sources {
 		availKW += src.AvailableKW * src.Efficiency
 	}
-	// also battery can discharge
+
 	availKW += math.Min(s.Battery.DischargeRate, s.Battery.LevelKWh/s.Params.TimeStepHours) * s.Battery.Efficiency
 
 	remainingKWh := availKW * s.Params.TimeStepHours
@@ -313,13 +312,12 @@ func (s *SimState) serveBatch(rng *rand.Rand, batch []*Request) {
 		if req.AmountKWh <= 1e-6 {
 			req.Served = true
 			req.EndTime = s.Time + 1
-			// remove request later
 		}
 		if remainingKWh <= 1e-9 {
 			break
 		}
 	}
-	// Update sources/battery consumption proportional (simple):
+	// Update sources/battery consumption proportional
 	consumedKWh := availKW*s.Params.TimeStepHours - remainingKWh
 	// first discharge battery up to need
 	if consumedKWh > 0 {
@@ -327,9 +325,9 @@ func (s *SimState) serveBatch(rng *rand.Rand, batch []*Request) {
 		s.Battery.LevelKWh -= fromBatt
 		consumedKWh -= fromBatt
 	}
-	// reduce renewable/non-renewable available power notionally (not tracked per-source here)
+	// reduce renewable/non-renewable available power notionally
 	_ = consumedKWh
-	// charge battery if excess from renewables (simple heuristic)
+	// charge battery if excess from renewable
 	genKW := 0.0
 	for _, src := range s.Sources {
 		if src.Type == Renewable {
@@ -366,7 +364,7 @@ func (s *SimState) step(rng *rand.Rand) {
 	s.Time++
 }
 
-// average wait, unserved percentage, renewable fraction
+
 func (s *SimState) run(rng *rand.Rand) map[string]float64 {
 	startBatt := s.Battery.LevelKWh
 	for s.Time < s.Params.TotalTime {
@@ -1189,6 +1187,37 @@ func printHelp() {
 
 
 
+func exportResultsToCSV(results map[string]map[string]float64, filename string) error {
+    file, err := os.Create(filename)
+    if err != nil {
+        return err
+    }
+    defer file.Close()
+    
+    writer := csv.NewWriter(file)
+    defer writer.Flush()
+    
+
+    header := []string{"Scheduler", "Avg_Wait", "Completed", "Unserved_kWh", "Backlog_Size"}
+    writer.Write(header)
+    
+
+    for sched, kpis := range results {
+        record := []string{
+            sched,
+            fmt.Sprintf("%.2f", kpis["avg_wait_steps"]),
+            fmt.Sprintf("%.0f", kpis["completed_reqs"]),
+            fmt.Sprintf("%.2f", kpis["unserved_kwh"]),
+            fmt.Sprintf("%.0f", kpis["backlog_size"]),
+        }
+        writer.Write(record)
+    }
+    
+    return nil
+}
+
+
+
 func main() {
 	// --- Metrics Server Setup ---
 	http.Handle("/metrics", promhttp.Handler())
@@ -1199,41 +1228,6 @@ func main() {
 		}
 	}()
 
-	base := &SimState{
-    Sources: []*EnergySource{
-        {Name: "Solar Farm", Type: Renewable, CapacityKW: 20, AvailableKW: 20, Efficiency: 0.9, FailureProb: 0.02},
-        {Name: "Wind Turbines", Type: Renewable, CapacityKW: 15, AvailableKW: 15, Efficiency: 0.88, FailureProb: 0.03},
-        {Name: "Hydro Plant", Type: Renewable, CapacityKW: 25, AvailableKW: 25, Efficiency: 0.92, FailureProb: 0.01},
-        {Name: "Gas Turbine", Type: NonRenewable, CapacityKW: 30, AvailableKW: 30, Efficiency: 0.95, FailureProb: 0.02},
-        {Name: "Coal Plant", Type: NonRenewable, CapacityKW: 40, AvailableKW: 40, Efficiency: 0.97, FailureProb: 0.005},
-    },
-    Battery: &Battery{
-        CapacityKWh:   100,
-        LevelKWh:      50,
-        ChargeRate:    10,
-        DischargeRate: 10,
-        Efficiency:    0.9,
-    },
-    Consumers: []Consumer{
-        {ID: 1, Priority: 5, Weight: 3.0},  
-        {ID: 2, Priority: 4, Weight: 2.5}, 
-        {ID: 3, Priority: 3, Weight: 1.5}, 
-        {ID: 4, Priority: 2, Weight: 1.0},  
-        {ID: 5, Priority: 2, Weight: 1.0},  
-        {ID: 6, Priority: 1, Weight: 0.5},  
-    },
-    Params: SimParams{
-        LambdaController: 0.7,
-        LambdaRenewable:  0.8,
-        ChiDemand:        5.0,   
-        OverheadC:        0.05,
-        ProcDelayT:       1,
-        TotalTime:        1000,  
-        NProcessors:      2,
-        PToSource:        0.6,
-        TimeStepHours:    0.25,
-    },
-	}
 
 
 	params := &SimParams{
@@ -1286,21 +1280,72 @@ func main() {
 
 		case "compare":
 			schedulers := []SchedulerType{FIFO, NPPS, WRR, EDF, HYBRID}
-			results := make(map[string]map[string]float64)
-			
-			for _, st := range schedulers {
-				s := *base
-				s.Scheduler = st
-				rng := rand.New(rand.NewSource(seed))
-				s.Time, s.Backlog, s.Completed, s.UnservedKWh = 0, nil, nil, 0
-				out := s.run(rng)
-				results[st.String()] = out
-			}
-			fmt.Println("Comparison Results:")
-			for sched, kpis := range results {
-				fmt.Printf("%s → avg_wait=%.2f, completed=%.0f, unserved=%.2f\n",
-					sched, kpis["avg_wait_steps"], kpis["completed_reqs"], kpis["unserved_kwh"])
-			}
+			numRuns := 10 
+			results := make(map[string]map[string][]float64)
+    		for _, st := range schedulers {
+        		results[st.String()] = map[string][]float64{
+            		"avg_wait_steps":   {},
+            		"completed_reqs":   {},
+            		"unserved_kwh":     {},
+            		"backlog_size":     {},
+            		"battery_delta_kwh": {},
+        		}
+    		}
+			fmt.Printf("Running comparison of schedulers (%d runs each)...\n", numRuns)
+    
+    for run := 0; run < numRuns; run++ {
+        fmt.Printf("Run %d/%d\n", run+1, numRuns)
+        
+        for _, st := range schedulers {
+   
+            s := &SimState{
+                Sources: []*EnergySource{
+                    {Name: "Solar", Type: Renewable, CapacityKW: 8, AvailableKW: 8, Efficiency: 0.95, FailureProb: 0.01},
+                    {Name: "Grid", Type: NonRenewable, CapacityKW: 10, AvailableKW: 10, Efficiency: 0.98, FailureProb: 0.005},
+                },
+                Battery: &Battery{CapacityKWh: 20, LevelKWh: 10, ChargeRate: 4, DischargeRate: 4, Efficiency: 0.92},
+                Consumers: []Consumer{
+                    {ID: 1, Priority: 2, Weight: 1.0}, 
+                    {ID: 2, Priority: 3, Weight: 2.0}, 
+                    {ID: 3, Priority: 1, Weight: 1.5},
+                },
+                Params:    *params,
+                Scheduler: st,
+            }
+            
+            runSeed := seed + int64(run*100)
+            rng := rand.New(rand.NewSource(runSeed))
+            
+            out := s.run(rng)
+            
+            results[st.String()]["avg_wait_steps"] = append(results[st.String()]["avg_wait_steps"], out["avg_wait_steps"])
+            results[st.String()]["completed_reqs"] = append(results[st.String()]["completed_reqs"], out["completed_reqs"])
+            results[st.String()]["unserved_kwh"] = append(results[st.String()]["unserved_kwh"], out["unserved_kwh"])
+            results[st.String()]["backlog_size"] = append(results[st.String()]["backlog_size"], out["backlog_size"])
+            results[st.String()]["battery_delta_kwh"] = append(results[st.String()]["battery_delta_kwh"], out["battery_delta_kwh"])
+        }
+    }
+    
+    fmt.Println("\n=== Scheduler Comparison Results (Averaged over", numRuns, "runs) ===")
+    fmt.Println("Scheduler\tAvg Wait\tCompleted\tUnserved (kWh)\tBacklog Size\tBattery Δ")
+    
+    for _, st := range schedulers {
+        sched := st.String()
+        avgWait := average(results[sched]["avg_wait_steps"])
+        avgCompleted := average(results[sched]["completed_reqs"])
+        avgUnserved := average(results[sched]["unserved_kwh"])
+        avgBacklog := average(results[sched]["backlog_size"])
+        avgBattery := average(results[sched]["battery_delta_kwh"])
+        
+        stdWait := stdDev(results[sched]["avg_wait_steps"], avgWait)
+        stdCompleted := stdDev(results[sched]["completed_reqs"], avgCompleted)
+        stdUnserved := stdDev(results[sched]["unserved_kwh"], avgUnserved)
+        
+        fmt.Printf("%s\t\t%.2f ± %.2f\t%.0f ± %.0f\t%.2f ± %.2f\t%.0f\t\t%.2f\n",
+            sched, avgWait, stdWait, avgCompleted, stdCompleted, 
+            avgUnserved, stdUnserved, avgBacklog, avgBattery)
+    }
+
 
 		case "set":
 			if len(args) != 2 {
@@ -1374,7 +1419,6 @@ func main() {
 				Params:    *params,
 			}
 
-			// check for -csv flag
 			var csvPath string
 			for i := 1; i < len(args); i++ {
 				if args[i] == "-csv" && i+1 < len(args) {
@@ -1572,4 +1616,27 @@ func min(a, b int) int {
 		return a
 	}
 	return b
+}
+
+func average(values []float64) float64 {
+    if len(values) == 0 {
+        return 0
+    }
+    sum := 0.0
+    for _, v := range values {
+        sum += v
+    }
+    return sum / float64(len(values))
+}
+
+func stdDev(values []float64, mean float64) float64 {
+    if len(values) <= 1 {
+        return 0
+    }
+    sum := 0.0
+    for _, v := range values {
+        diff := v - mean
+        sum += diff * diff
+    }
+    return math.Sqrt(sum / float64(len(values)-1))
 }

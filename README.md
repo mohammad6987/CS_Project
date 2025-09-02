@@ -10,6 +10,7 @@ This project is a comprehensive simulation of a smart energy grid written in Go.
     -   `NPPS` (Non-Preemptive Priority Scheduling)
     -   `WRR` (Weighted Round Robin)
     -   `EDF` (Earliest Deadline First)
+    -   `HYBRID` (Mix of WRR with EDF)
 -   **Reinforcement Learning**: Includes a Q-Learning agent (`ql`) that can be trained to dynamically select the optimal scheduling policy based on the current state of the grid.
 -   **Machine Learning Toolkit**:
     -   **Forecasting**: Predicts target values from datasets using Linear Regression, Random Forest, and a Multi-Layer Perceptron (MLP) Neural Network.
@@ -41,5 +42,6 @@ for more info in the CLI
 
 ## Code Structure
 
-- **MLP**: 
+- **Neural Network**:
+The NN uses 2 layer NN with Adam activation function 
 ![Alt text](./mlp.png)
