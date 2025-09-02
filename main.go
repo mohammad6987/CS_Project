@@ -180,13 +180,15 @@ type SimParams struct {
 type SimState struct {
 	Time      int
 	Sources   []*EnergySource
-	Battery   *Battery
+	Batteries   []*Battery
 	Consumers []Consumer
 	Backlog   []*Request
 	Completed []*Request
 	Scheduler SchedulerType
 	Params    SimParams
 	UnservedKWh float64
+	EnergyPredictor *MLP
+	PredictedDemand []float64
 	
 }
 
@@ -233,8 +235,19 @@ func (s *SimState) updateSources(rng *rand.Rand) {
 
 
 func (s *SimState) generateRequests(rng *rand.Rand) {
-	pois := newPoisson(rng, s.Params.ChiDemand)
-	n := int(pois.Rand())
+	//predictedDemand := s.predictDemand()
+	actualDemand := newPoisson(rng, s.Params.ChiDemand).Rand()
+	adjustment := 1.0
+    if len(s.PredictedDemand) > 10 {
+        
+        lastPrediction := s.PredictedDemand[len(s.PredictedDemand)-2]
+        lastActual := s.Params.ChiDemand 
+        error := math.Abs(lastPrediction-lastActual) / lastActual
+        if error > 0.2 {
+            adjustment = 1.2 
+        }
+    }
+	n := int(actualDemand * adjustment)
 	for i := 0; i < n; i++ {
 		c := s.Consumers[rng.Intn(len(s.Consumers))]
 		amt := 0.5 + rng.Float64()*10.0        
@@ -246,6 +259,24 @@ func (s *SimState) generateRequests(rng *rand.Rand) {
 		}
 		s.Backlog = append(s.Backlog, req)
 	}
+
+}
+
+func (s *SimState) getTotalBatteryCapacity() float64 {
+    total := 0.0
+    for _, batt := range s.Batteries {
+        total += batt.CapacityKWh
+    }
+    return total
+}
+
+
+func (s *SimState) getTotalBatteryLevel() float64 {
+    total := 0.0
+    for _, batt := range s.Batteries {
+        total += batt.LevelKWh
+    }
+    return total
 }
 
 
@@ -265,8 +296,20 @@ func (s *SimState) hybridScheduler() []*Request {
             urgentRequests++
         }
     }
+
+	totalBatteryLevel := s.getTotalBatteryLevel()
+    totalBatteryCapacity := s.getTotalBatteryCapacity()
+    batteryPercent := totalBatteryLevel / totalBatteryCapacity
     
-    if urgentRequests > backlogSize/3 {
+    if batteryPercent < 0.2 {
+        // Low battery, prioritize high-priority requests
+        sort.SliceStable(s.Backlog, func(i, j int) bool {
+            if s.Backlog[i].Priority == s.Backlog[j].Priority {
+                return s.Backlog[i].ArrivalTime < s.Backlog[j].ArrivalTime
+            }
+            return s.Backlog[i].Priority > s.Backlog[j].Priority
+        })
+    } else if urgentRequests > backlogSize/3 {
         // Use EDF when many requests are urgent
         sort.SliceStable(s.Backlog, func(i, j int) bool { 
             return s.Backlog[i].Deadline < s.Backlog[j].Deadline 
@@ -287,7 +330,6 @@ func (s *SimState) hybridScheduler() []*Request {
             groups[req.Priority] = append(groups[req.Priority], req)
         }
         
-        // Clear backlog and reassemble in round-robin order
         s.Backlog = s.Backlog[:0]
         for i := 0; i < backlogSize; i++ {
             for priority := 3; priority >= 1; priority-- {
@@ -298,7 +340,7 @@ func (s *SimState) hybridScheduler() []*Request {
             }
         }
     } else {
-        // Default to FIFO
+        // default as FIFO
         sort.SliceStable(s.Backlog, func(i, j int) bool { 
             return s.Backlog[i].ArrivalTime < s.Backlog[j].ArrivalTime 
         })
@@ -365,70 +407,112 @@ func (s *SimState) pickNextRequests(rng *rand.Rand) []*Request {
 }
 
 func (s *SimState) serveBatch(rng *rand.Rand, batch []*Request) {
-	if len(batch) == 0 {
-		return
-	}
-	availKW := 0.0
-	for _, src := range s.Sources {
-		availKW += src.AvailableKW * src.Efficiency
-	}
+    if len(batch) == 0 {
+        return
+    }
+    
+    // Calculate total available power from all sources
+    availKW := 0.0
+    for _, src := range s.Sources {
+        availKW += src.AvailableKW * src.Efficiency
+    }
 
-	availKW += math.Min(s.Battery.DischargeRate, s.Battery.LevelKWh/s.Params.TimeStepHours) * s.Battery.Efficiency
+    // Calculate total available power from all batteries
+    totalBatteryDischarge := 0.0
+    for _, batt := range s.Batteries {
+        battDischarge := math.Min(batt.DischargeRate, batt.LevelKWh/s.Params.TimeStepHours)
+        totalBatteryDischarge += battDischarge * batt.Efficiency
+    }
+    availKW += totalBatteryDischarge
 
-	remainingKWh := availKW * s.Params.TimeStepHours
-	for _, req := range batch {
-		if req.StartTime < 0 {
-			req.StartTime = s.Time
-		}
-		need := req.AmountKWh + s.Params.OverheadC
-		served := math.Min(need, remainingKWh)
-		remainingKWh -= served
-		req.AmountKWh -= served
-		if req.AmountKWh <= 1e-6 {
-			req.Served = true
-			req.EndTime = s.Time + 1
-		}
-		if remainingKWh <= 1e-9 {
-			break
-		}
-	}
-	// Update sources/battery consumption proportional
-	consumedKWh := availKW*s.Params.TimeStepHours - remainingKWh
-	// first discharge battery up to need
-	if consumedKWh > 0 {
-		fromBatt := math.Min(consumedKWh, math.Min(s.Battery.DischargeRate*s.Params.TimeStepHours, s.Battery.LevelKWh))
-		s.Battery.LevelKWh -= fromBatt
-		consumedKWh -= fromBatt
-	}
-	// reduce renewable/non-renewable available power notionally
-	_ = consumedKWh
-	// charge battery if excess from renewable
-	genKW := 0.0
-	for _, src := range s.Sources {
-		if src.Type == Renewable {
-			genKW += src.AvailableKW * src.Efficiency
-		}
-	}
-	excessKWh := math.Max(0, genKW*s.Params.TimeStepHours-(availKW*s.Params.TimeStepHours-remainingKWh))
-	if excessKWh > 0 {
-		charge := math.Min(excessKWh, s.Battery.ChargeRate*s.Params.TimeStepHours)
-		s.Battery.LevelKWh = clamp(s.Battery.LevelKWh+charge*s.Battery.Efficiency, 0, s.Battery.CapacityKWh)
-	}
-	// Remove served and expired
-	keep := s.Backlog[:0]
-	for _, r := range s.Backlog {
-		if r.Served {
-			s.Completed = append(s.Completed, r)
-			continue
-		}
-		if s.Time+1 > r.Deadline {
-			// missed deadline => unserved energy counted
-			s.UnservedKWh += math.Max(0, r.AmountKWh)
-			continue
-		}
-		keep = append(keep, r)
-	}
-	s.Backlog = keep
+    remainingKWh := availKW * s.Params.TimeStepHours
+    
+    for _, req := range batch {
+        if req.StartTime < 0 {
+            req.StartTime = s.Time
+        }
+        need := req.AmountKWh + s.Params.OverheadC
+        served := math.Min(need, remainingKWh)
+        remainingKWh -= served
+        req.AmountKWh -= served
+        
+        if req.AmountKWh <= 1e-6 {
+            req.Served = true
+            req.EndTime = s.Time + 1
+        }
+        
+        if remainingKWh <= 1e-9 {
+            break
+        }
+    }
+    
+    // Update batteries consumption proportional to their capacity
+    consumedKWh := availKW*s.Params.TimeStepHours - remainingKWh
+    
+    // Distribute consumption across batteries
+    if consumedKWh > 0 {
+        totalBatteryCapacity := 0.0
+        for _, batt := range s.Batteries {
+            totalBatteryCapacity += batt.CapacityKWh
+        }
+        
+        for _, batt := range s.Batteries {
+            batteryShare := consumedKWh * (batt.CapacityKWh / totalBatteryCapacity)
+            fromBatt := math.Min(batteryShare, math.Min(batt.DischargeRate*s.Params.TimeStepHours, batt.LevelKWh))
+            batt.LevelKWh -= fromBatt
+            consumedKWh -= fromBatt
+            
+            if consumedKWh <= 0 {
+                break
+            }
+        }
+    }
+    
+    // Charge batteries if excess from renewable
+    genKW := 0.0
+    for _, src := range s.Sources {
+        if src.Type == Renewable {
+            genKW += src.AvailableKW * src.Efficiency
+        }
+    }
+    
+    excessKWh := math.Max(0, genKW*s.Params.TimeStepHours-(availKW*s.Params.TimeStepHours-remainingKWh))
+    
+    if excessKWh > 0 {
+        // Distribute excess energy to batteries based on their charge rate and capacity
+        totalChargeCapacity := 0.0
+        for _, batt := range s.Batteries {
+            totalChargeCapacity += batt.ChargeRate * s.Params.TimeStepHours
+        }
+        
+        for _, batt := range s.Batteries {
+            if excessKWh <= 0 {
+                break
+            }
+            
+            batteryShare := excessKWh * (batt.ChargeRate / totalChargeCapacity)
+            charge := math.Min(batteryShare, batt.ChargeRate*s.Params.TimeStepHours)
+            charge = math.Min(charge, batt.CapacityKWh-batt.LevelKWh) // Don't overcharge
+            
+            batt.LevelKWh = clamp(batt.LevelKWh+charge*batt.Efficiency, 0, batt.CapacityKWh)
+            excessKWh -= charge
+        }
+    }
+    
+ 
+    keep := s.Backlog[:0]
+    for _, r := range s.Backlog {
+        if r.Served {
+            s.Completed = append(s.Completed, r)
+            continue
+        }
+        if s.Time+1 > r.Deadline {
+            s.UnservedKWh += math.Max(0, r.AmountKWh)
+            continue
+        }
+        keep = append(keep, r)
+    }
+    s.Backlog = keep
 }
 
 func (s *SimState) step(rng *rand.Rand) {
@@ -439,54 +523,70 @@ func (s *SimState) step(rng *rand.Rand) {
 	s.Time++
 }
 
-
 func (s *SimState) run(rng *rand.Rand) map[string]float64 {
-	startBatt := s.Battery.LevelKWh
-	for s.Time < s.Params.TotalTime {
-		s.step(rng)
-	}
-	// KPIs
-	var waitSum float64
-	for _, r := range s.Completed {
-		waitSum += float64(r.EndTime - r.ArrivalTime)
-	}
-	avgWait := 0.0
-	if len(s.Completed) > 0 {
-		avgWait = waitSum / float64(len(s.Completed))
-	}
-	servedKWh := 0.0
-	for _, r := range s.Completed {
-		servedKWh += r.AmountKWh + s.Params.OverheadC
-	} // amount requested initially ≈ served
-	// crude: estimate renewable production vs total consumption via availability
-	renKW := 0.0
-	totKW := 0.0
-	for _, src := range s.Sources {
-		if src.Type == Renewable {
-			renKW += src.CapacityKW * src.Efficiency
-		}
-		totKW += src.CapacityKW * src.Efficiency
-	}
-	renFrac := 0.0
-	if totKW > 0 {
-		renFrac = renKW / totKW
-	}
-	results := map[string]float64{
-		"avg_wait_steps":          avgWait,
-		"completed_reqs":          float64(len(s.Completed)),
-		"unserved_kwh":            s.UnservedKWh,
-		"battery_delta_kwh":       s.Battery.LevelKWh - startBatt,
-		"renewable_frac_capacity": renFrac,
-		"backlog_size":            float64(len(s.Backlog)),
-	}
+    // Track initial battery levels
+    startBattLevels := make([]float64, len(s.Batteries))
+    for i, batt := range s.Batteries {
+        startBattLevels[i] = batt.LevelKWh
+    }
+    
+    for s.Time < s.Params.TotalTime {
+        s.step(rng)
+    }
+    
+    // KPIs
+    var waitSum float64
+    for _, r := range s.Completed {
+        waitSum += float64(r.EndTime - r.ArrivalTime)
+    }
+    
+    avgWait := 0.0
+    if len(s.Completed) > 0 {
+        avgWait = waitSum / float64(len(s.Completed))
+    }
+    
+    servedKWh := 0.0
+    for _, r := range s.Completed {
+        servedKWh += r.AmountKWh + s.Params.OverheadC
+    }
+    
+    // Calculate battery delta
+    batteryDelta := 0.0
+    for i, batt := range s.Batteries {
+        batteryDelta += batt.LevelKWh - startBattLevels[i]
+    }
+    
+    // Calculate renewable fraction
+    renKW := 0.0
+    totKW := 0.0
+    for _, src := range s.Sources {
+        if src.Type == Renewable {
+            renKW += src.CapacityKW * src.Efficiency
+        }
+        totKW += src.CapacityKW * src.Efficiency
+    }
+    
+    renFrac := 0.0
+    if totKW > 0 {
+        renFrac = renKW / totKW
+    }
+    
+    results := map[string]float64{
+        "avg_wait_steps":          avgWait,
+        "completed_reqs":          float64(len(s.Completed)),
+        "unserved_kwh":            s.UnservedKWh,
+        "battery_delta_kwh":       batteryDelta,
+        "renewable_frac_capacity": renFrac,
+        "backlog_size":            float64(len(s.Backlog)),
+    }
 
-	schedulerName := s.Scheduler.String()
-	avgWaitSteps.WithLabelValues(schedulerName).Set(results["avg_wait_steps"])
-	completedReqs.WithLabelValues(schedulerName).Set(results["completed_reqs"])
-	unservedKWh.WithLabelValues(schedulerName).Set(results["unserved_kwh"])
-	backlogSize.WithLabelValues(schedulerName).Set(results["backlog_size"])
+    schedulerName := s.Scheduler.String()
+    avgWaitSteps.WithLabelValues(schedulerName).Set(results["avg_wait_steps"])
+    completedReqs.WithLabelValues(schedulerName).Set(results["completed_reqs"])
+    unservedKWh.WithLabelValues(schedulerName).Set(results["unserved_kwh"])
+    backlogSize.WithLabelValues(schedulerName).Set(results["backlog_size"])
 
-	return results
+    return results
 }
 
 // ==========================
@@ -869,9 +969,44 @@ func (m *MLP) Predict(X [][]float64) []float64 {
 	return out
 }
 
-// ==========================
-// Clustering: KMeans + DBSCAN (simple)
-// ==========================
+func initPredictor(s *SimState, historicalData [][]float64) {
+ 
+    s.EnergyPredictor = NewMLP(24, 16, rand.New(rand.NewSource(42))) 
+    s.EnergyPredictor.LR = 0.01
+    
+    X := make([][]float64, 100)
+    y := make([]float64, 100)
+    for i := range X {
+        X[i] = make([]float64, 24)
+        for j := range X[i] {
+            X[i][j] = rand.Float64() * 10.0
+        }
+        y[i] = rand.Float64() * 50.0
+    }
+    
+    s.EnergyPredictor.Train(X, y, 30, 16)
+}
+
+
+func (s *SimState) predictDemand() float64 {
+    
+    features := make([]float64, 24)
+    
+    hour := s.Time % 24
+    features[hour] = 1.0
+    
+    if hour >= 7 && hour <= 22 {
+        features[23] = 1.0 
+    } else {
+        features[23] = 0.0 
+    }
+    
+    prediction := s.EnergyPredictor.Predict([][]float64{features})[0]
+    s.PredictedDemand = append(s.PredictedDemand, prediction)
+    
+    return prediction
+}
+
 
 func KMeans(X [][]float64, k int, iters int, seed int64) ([]int, [][]float64) {
 	rng := rand.New(rand.NewSource(seed))
@@ -1489,7 +1624,10 @@ func main() {
 					{Name: "Solar", Type: Renewable, CapacityKW: 8, AvailableKW: 8, Efficiency: 0.95, FailureProb: 0.01},
 					{Name: "Grid", Type: NonRenewable, CapacityKW: 10, AvailableKW: 10, Efficiency: 0.98, FailureProb: 0.005},
 				},
-				Battery:   &Battery{CapacityKWh: 20, LevelKWh: 10, ChargeRate: 4, DischargeRate: 4, Efficiency: 0.92},
+				Batteries: []*Battery{ 
+        			{CapacityKWh: 20, LevelKWh: 10, ChargeRate: 4, DischargeRate: 4, Efficiency: 0.92},
+        			{CapacityKWh: 15, LevelKWh: 5, ChargeRate: 3, DischargeRate: 3, Efficiency: 0.90},
+    			},  
 				Consumers: []Consumer{{ID: 1, Priority: 2, Weight: 1.0}, {ID: 2, Priority: 3, Weight: 2.0}, {ID: 3, Priority: 1, Weight: 1.5}},
 				Params:    *params,
 			}
