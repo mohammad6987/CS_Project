@@ -22,7 +22,6 @@ import (
 	"gonum.org/v1/gonum/stat/distuv"
 )
 
-// Required for integratign Prometheus
 
 var (
 	avgWaitSteps = promauto.NewGaugeVec(prometheus.GaugeOpts{
@@ -46,7 +45,6 @@ var (
 	}, []string{"scheduler"})
 )
 
-// Model & Simulation DataTypes
 
 type SourceType int
 
@@ -62,7 +60,7 @@ type EnergySource struct {
 	AvailableKW float64
 	Efficiency  float64
 	FailureProb float64
-	DownUntil   int // timestep until which source is down
+	DownUntil   int 
 }
 
 type Battery struct {
@@ -87,7 +85,6 @@ type Request struct {
 	Priority    int
 	Weight      float64
 	Deadline    int
-	// filled during simulation
 	StartTime int
 	EndTime   int
 	ServedKW  float64
@@ -147,7 +144,6 @@ func (pq *ReqPQ) Pop() any {
 	return item
 }
 
-// Simulation Parama
 
 type SimParams struct {
 	LambdaController float64 // lambda1: exponential service parameter in controller
@@ -161,7 +157,6 @@ type SimParams struct {
 	TimeStepHours    float64 // conversion of one step to hours
 }
 
-// Simulation State
 
 type SimState struct {
 	Time      int
@@ -172,11 +167,9 @@ type SimState struct {
 	Completed []*Request
 	Scheduler SchedulerType
 	Params    SimParams
-	// Metrics
 	UnservedKWh float64
 }
 
-// Generators & Utilities
 
 func newPoisson(r *rand.Rand, rate float64) distuv.Poisson {
 	return distuv.Poisson{Lambda: rate, Src: r}
@@ -198,19 +191,17 @@ func clamp(x, lo, hi float64) float64 {
 
 func (s *SimState) updateSources(rng *rand.Rand) {
 	for _, src := range s.Sources {
-		if s.Time < src.DownUntil { // in outage
+		if s.Time < src.DownUntil { 
 			src.AvailableKW = 0
 			continue
 		}
 		if rng.Float64() < src.FailureProb {
-			// outage for a few steps
 			dur := rng.Intn(6) + 1
 			src.DownUntil = s.Time + dur
 			src.AvailableKW = 0
 			continue
 		}
 		if src.Type == Renewable {
-			// fluctuate around capacity with exponential shock
 			shock := newExp(rng, s.Params.LambdaRenewable).Rand()
 			val := src.CapacityKW * math.Exp(-shock)
 			src.AvailableKW = clamp(val, 0, src.CapacityKW)
@@ -220,14 +211,14 @@ func (s *SimState) updateSources(rng *rand.Rand) {
 	}
 }
 
-// Request generation: Poisson number of consumers emit requests with random sizes and deadlines
+
 func (s *SimState) generateRequests(rng *rand.Rand) {
 	pois := newPoisson(rng, s.Params.ChiDemand)
 	n := int(pois.Rand())
 	for i := 0; i < n; i++ {
 		c := s.Consumers[rng.Intn(len(s.Consumers))]
-		amt := 0.5 + rng.Float64()*3.0        // kWh demand
-		deadline := s.Time + 2 + rng.Intn(12) // steps
+		amt := 0.5 + rng.Float64()*10.0        
+		deadline := s.Time + 20 + rng.Intn(50) 
 		req := &Request{
 			ArrivalTime: s.Time, ConsumerID: c.ID, AmountKWh: amt,
 			Priority: c.Priority, Weight: c.Weight, Deadline: deadline,
@@ -237,7 +228,6 @@ func (s *SimState) generateRequests(rng *rand.Rand) {
 	}
 }
 
-// Scheduling Policies
 
 func (s *SimState) pickNextRequests(rng *rand.Rand) []*Request {
 	if len(s.Backlog) == 0 {
@@ -319,7 +309,7 @@ func (s *SimState) serveBatch(rng *rand.Rand, batch []*Request) {
 		need := req.AmountKWh + s.Params.OverheadC
 		served := math.Min(need, remainingKWh)
 		remainingKWh -= served
-		req.AmountKWh -= served - s.Params.OverheadC // net served to demand
+		req.AmountKWh -= served
 		if req.AmountKWh <= 1e-6 {
 			req.Served = true
 			req.EndTime = s.Time + 1
@@ -1197,6 +1187,8 @@ func printHelp() {
 	fmt.Println("  exit                 - Exit the application")
 }
 
+
+
 func main() {
 	// --- Metrics Server Setup ---
 	http.Handle("/metrics", promhttp.Handler())
@@ -1206,6 +1198,43 @@ func main() {
 			log.Printf("Metrics server failed: %v", err)
 		}
 	}()
+
+	base := &SimState{
+    Sources: []*EnergySource{
+        {Name: "Solar Farm", Type: Renewable, CapacityKW: 20, AvailableKW: 20, Efficiency: 0.9, FailureProb: 0.02},
+        {Name: "Wind Turbines", Type: Renewable, CapacityKW: 15, AvailableKW: 15, Efficiency: 0.88, FailureProb: 0.03},
+        {Name: "Hydro Plant", Type: Renewable, CapacityKW: 25, AvailableKW: 25, Efficiency: 0.92, FailureProb: 0.01},
+        {Name: "Gas Turbine", Type: NonRenewable, CapacityKW: 30, AvailableKW: 30, Efficiency: 0.95, FailureProb: 0.02},
+        {Name: "Coal Plant", Type: NonRenewable, CapacityKW: 40, AvailableKW: 40, Efficiency: 0.97, FailureProb: 0.005},
+    },
+    Battery: &Battery{
+        CapacityKWh:   100,
+        LevelKWh:      50,
+        ChargeRate:    10,
+        DischargeRate: 10,
+        Efficiency:    0.9,
+    },
+    Consumers: []Consumer{
+        {ID: 1, Priority: 5, Weight: 3.0},  
+        {ID: 2, Priority: 4, Weight: 2.5}, 
+        {ID: 3, Priority: 3, Weight: 1.5}, 
+        {ID: 4, Priority: 2, Weight: 1.0},  
+        {ID: 5, Priority: 2, Weight: 1.0},  
+        {ID: 6, Priority: 1, Weight: 0.5},  
+    },
+    Params: SimParams{
+        LambdaController: 0.7,
+        LambdaRenewable:  0.8,
+        ChiDemand:        5.0,   
+        OverheadC:        0.05,
+        ProcDelayT:       1,
+        TotalTime:        1000,  
+        NProcessors:      2,
+        PToSource:        0.6,
+        TimeStepHours:    0.25,
+    },
+	}
+
 
 	params := &SimParams{
 		LambdaController: 0.5,
@@ -1258,9 +1287,11 @@ func main() {
 		case "compare":
 			schedulers := []SchedulerType{FIFO, NPPS, WRR, EDF, HYBRID}
 			results := make(map[string]map[string]float64)
+			
 			for _, st := range schedulers {
 				s := *base
 				s.Scheduler = st
+				rng := rand.New(rand.NewSource(seed))
 				s.Time, s.Backlog, s.Completed, s.UnservedKWh = 0, nil, nil, 0
 				out := s.run(rng)
 				results[st.String()] = out
