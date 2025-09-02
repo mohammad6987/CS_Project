@@ -1175,51 +1175,71 @@ func (q *QAgent) update(state [3]int, action SchedulerType, reward float64, next
 	old := q.Q[state][action]
 	q.Q[state][action] = old + q.Alpha*(reward+q.Gamma*maxNext-old)
 }
-
 // Train Q-agent by running episodes where action is choosing scheduler per step.
 func trainQLearning(base *SimState, episodes, steps int, seed int64) *QAgent {
-	rng := rand.New(rand.NewSource(seed))
-	agent := NewQAgent()
-	for ep := 0; ep < episodes; ep++ {
-		// reset sim copy
-		s := *base
-		s.Time = 0
-		s.Backlog = nil
-		s.Completed = nil
-		s.UnservedKWh = 0
-		s.Battery = &Battery{CapacityKWh: base.Battery.CapacityKWh, LevelKWh: base.Battery.LevelKWh, ChargeRate: base.Battery.ChargeRate, DischargeRate: base.Battery.DischargeRate, Efficiency: base.Battery.Efficiency}
-		state := observeState(&s)
-		for t := 0; t < steps; t++ {
-			// agent picks scheduler
-			a := agent.selectAction(state, rng)
-			s.Scheduler = a
-			s.step(rng)
-			next := observeState(&s)
-			// reward: negative waiting and unserved energy, encourage completion
-			reward := -float64(len(s.Backlog)) - s.UnservedKWh*0.1 + float64(len(s.Completed))*0.01
-			agent.update(state, a, reward, next)
-			state = next
-		}
-	}
-	return agent
+    rng := rand.New(rand.NewSource(seed))
+    agent := NewQAgent()
+    
+    for ep := 0; ep < episodes; ep++ {
+        // reset sim copy
+        s := *base
+        s.Time = 0
+        s.Backlog = nil
+        s.Completed = nil
+        s.UnservedKWh = 0
+        
+        // Reset batteries to initial state
+        s.Batteries = make([]*Battery, len(base.Batteries))
+        for i, baseBatt := range base.Batteries {
+            s.Batteries[i] = &Battery{
+                CapacityKWh:   baseBatt.CapacityKWh,
+                LevelKWh:      baseBatt.LevelKWh,
+                ChargeRate:    baseBatt.ChargeRate,
+                DischargeRate: baseBatt.DischargeRate,
+                Efficiency:    baseBatt.Efficiency,
+            }
+        }
+        
+        state := observeState(&s)
+        for t := 0; t < steps; t++ {
+            // agent picks scheduler
+            a := agent.selectAction(state, rng)
+            s.Scheduler = a
+            s.step(rng)
+            next := observeState(&s)
+            
+            // reward: negative waiting and unserved energy, encourage completion
+            reward := -float64(len(s.Backlog)) - s.UnservedKWh*0.1 + float64(len(s.Completed))*0.01
+            agent.update(state, a, reward, next)
+            state = next
+        }
+    }
+    
+    return agent
 }
-
 func observeState(s *SimState) [3]int {
-	// buckets: supply, demand, battery level
-	supplyKW := 0.0
-	for _, src := range s.Sources {
-		supplyKW += src.AvailableKW
-	}
-	demandKWh := 0.0
-	for _, r := range s.Backlog {
-		demandKWh += r.AmountKWh
-	}
-	batt := s.Battery.LevelKWh
-	return [3]int{
-		bucketize(supplyKW, []float64{2, 5, 10}),
-		bucketize(demandKWh, []float64{3, 8, 15}),
-		bucketize(batt, []float64{2, 5, 10}),
-	}
+    // buckets: supply, demand, battery level
+    supplyKW := 0.0
+    for _, src := range s.Sources {
+        supplyKW += src.AvailableKW
+    }
+    
+    demandKWh := 0.0
+    for _, r := range s.Backlog {
+        demandKWh += r.AmountKWh
+    }
+    
+    // Calculate total battery level
+    totalBatteryLevel := 0.0
+    for _, batt := range s.Batteries {
+        totalBatteryLevel += batt.LevelKWh
+    }
+    
+    return [3]int{
+        bucketize(supplyKW, []float64{2, 5, 10}),
+        bucketize(demandKWh, []float64{3, 8, 15}),
+        bucketize(totalBatteryLevel, []float64{2, 5, 10}),
+    }
 }
 
 // ==========================
@@ -1513,8 +1533,11 @@ func main() {
                     {Name: "Solar", Type: Renewable, CapacityKW: 8, AvailableKW: 8, Efficiency: 0.95, FailureProb: 0.01},
                     {Name: "Grid", Type: NonRenewable, CapacityKW: 10, AvailableKW: 10, Efficiency: 0.98, FailureProb: 0.005},
                 },
-                Battery: &Battery{CapacityKWh: 20, LevelKWh: 10, ChargeRate: 4, DischargeRate: 4, Efficiency: 0.92},
-                Consumers: []Consumer{
+                Batteries: []*Battery{ 
+        			{CapacityKWh: 20, LevelKWh: 10, ChargeRate: 4, DischargeRate: 4, Efficiency: 0.92},
+        			{CapacityKWh: 15, LevelKWh: 5, ChargeRate: 3, DischargeRate: 3, Efficiency: 0.90},
+    			},
+				Consumers: []Consumer{
                     {ID: 1, Priority: 2, Weight: 1.0}, 
                     {ID: 2, Priority: 3, Weight: 2.0}, 
                     {ID: 3, Priority: 1, Weight: 1.5},
