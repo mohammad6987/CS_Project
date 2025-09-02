@@ -45,7 +45,7 @@ var (
 	}, []string{"scheduler"})
 )
 
-
+var ConsiderBlackOUT bool
 type SourceType int
 
 const (
@@ -189,6 +189,7 @@ type SimState struct {
 	UnservedKWh float64
 	EnergyPredictor *MLP
 	PredictedDemand []float64
+	ConsiderBlackout bool
 	
 }
 
@@ -213,7 +214,7 @@ func clamp(x, lo, hi float64) float64 {
 
 func (s *SimState) updateSources(rng *rand.Rand) {
 	for _, src := range s.Sources {
-		if s.Time < src.DownUntil { 
+		if s.ConsiderBlackout && s.Time < src.DownUntil { 
 			src.AvailableKW = 0
 			continue
 		}
@@ -301,18 +302,18 @@ func (s *SimState) hybridScheduler() []*Request {
     totalBatteryCapacity := s.getTotalBatteryCapacity()
     batteryPercent := totalBatteryLevel / totalBatteryCapacity
     
-    if batteryPercent < 0.2 {
+    if urgentRequests > backlogSize/3 {
+        // Use EDF when many requests are urgent
+        sort.SliceStable(s.Backlog, func(i, j int) bool { 
+            return s.Backlog[i].Deadline < s.Backlog[j].Deadline 
+        })
+    }else if batteryPercent < 0.2 {
         // Low battery, prioritize high-priority requests
         sort.SliceStable(s.Backlog, func(i, j int) bool {
             if s.Backlog[i].Priority == s.Backlog[j].Priority {
                 return s.Backlog[i].ArrivalTime < s.Backlog[j].ArrivalTime
             }
             return s.Backlog[i].Priority > s.Backlog[j].Priority
-        })
-    } else if urgentRequests > backlogSize/3 {
-        // Use EDF when many requests are urgent
-        sort.SliceStable(s.Backlog, func(i, j int) bool { 
-            return s.Backlog[i].Deadline < s.Backlog[j].Deadline 
         })
     } else if highPriorityDemand > totalDemand/2 {
         // Use NPPS when high priority demand is significant
@@ -388,7 +389,7 @@ func (s *SimState) pickNextRequests(rng *rand.Rand) []*Request {
 				break
 			}
 		}
-		// chosen request to front
+		
 		if idx != 0 {
 			chosen := s.Backlog[idx]
 			copy(s.Backlog[1:idx+1], s.Backlog[0:idx])
@@ -410,14 +411,13 @@ func (s *SimState) serveBatch(rng *rand.Rand, batch []*Request) {
     if len(batch) == 0 {
         return
     }
-    
-    // Calculate total available power from all sources
+ 
     availKW := 0.0
     for _, src := range s.Sources {
         availKW += src.AvailableKW * src.Efficiency
     }
 
-    // Calculate total available power from all batteries
+
     totalBatteryDischarge := 0.0
     for _, batt := range s.Batteries {
         battDischarge := math.Min(batt.DischargeRate, batt.LevelKWh/s.Params.TimeStepHours)
@@ -446,10 +446,9 @@ func (s *SimState) serveBatch(rng *rand.Rand, batch []*Request) {
         }
     }
     
-    // Update batteries consumption proportional to their capacity
     consumedKWh := availKW*s.Params.TimeStepHours - remainingKWh
     
-    // Distribute consumption across batteries
+
     if consumedKWh > 0 {
         totalBatteryCapacity := 0.0
         for _, batt := range s.Batteries {
@@ -1188,7 +1187,7 @@ func trainQLearning(base *SimState, episodes, steps int, seed int64) *QAgent {
         s.Completed = nil
         s.UnservedKWh = 0
         
-        // Reset batteries to initial state
+      
         s.Batteries = make([]*Battery, len(base.Batteries))
         for i, baseBatt := range base.Batteries {
             s.Batteries[i] = &Battery{
@@ -1449,7 +1448,6 @@ func exportResultsToCSV(results map[string]map[string]float64, filename string) 
 
 
 func main() {
-	// --- Metrics Server Setup ---
 	http.Handle("/metrics", promhttp.Handler())
 	go func() {
 		log.Println("Metrics server starting on :2112")
@@ -1470,6 +1468,7 @@ func main() {
 		NProcessors:      1,
 		PToSource:        0.5,
 		TimeStepHours:    0.25,
+
 	}
 	var seed int64 = 7
 
@@ -1529,22 +1528,34 @@ func main() {
         for _, st := range schedulers {
    
             s := &SimState{
-                Sources: []*EnergySource{
-                    {Name: "Solar", Type: Renewable, CapacityKW: 8, AvailableKW: 8, Efficiency: 0.95, FailureProb: 0.01},
-                    {Name: "Grid", Type: NonRenewable, CapacityKW: 10, AvailableKW: 10, Efficiency: 0.98, FailureProb: 0.005},
-                },
-                Batteries: []*Battery{ 
-        			{CapacityKWh: 20, LevelKWh: 10, ChargeRate: 4, DischargeRate: 4, Efficiency: 0.92},
-        			{CapacityKWh: 15, LevelKWh: 5, ChargeRate: 3, DischargeRate: 3, Efficiency: 0.90},
-    			},
-				Consumers: []Consumer{
-                    {ID: 1, Priority: 2, Weight: 1.0}, 
-                    {ID: 2, Priority: 3, Weight: 2.0}, 
-                    {ID: 3, Priority: 1, Weight: 1.5},
-                },
-                Params:    *params,
-                Scheduler: st,
-            }
+    Sources: []*EnergySource{
+        {Name: "Solar", Type: Renewable, CapacityKW: 8, AvailableKW: 8, Efficiency: 0.95, FailureProb: 0.05},
+        {Name: "Wind", Type: Renewable, CapacityKW: 6, AvailableKW: 6, Efficiency: 0.9, FailureProb: 0.1},
+        {Name: "Grid", Type: NonRenewable, CapacityKW: 15, AvailableKW: 15, Efficiency: 0.98, FailureProb: 0.01},
+        {Name: "DieselGen", Type: NonRenewable, CapacityKW: 5, AvailableKW: 5, Efficiency: 0.85, FailureProb: 0.02},
+    },
+    Batteries: []*Battery{
+        {CapacityKWh: 25, LevelKWh: 10, ChargeRate: 5, DischargeRate: 5, Efficiency: 0.92},
+        {CapacityKWh: 15, LevelKWh: 5, ChargeRate: 3, DischargeRate: 3, Efficiency: 0.9},
+        {CapacityKWh: 10, LevelKWh: 2, ChargeRate: 2, DischargeRate: 2, Efficiency: 0.88},
+    },
+    Consumers: []Consumer{
+        {ID: 1, Priority: 3, Weight: 2.0}, 
+        {ID: 2, Priority: 2, Weight: 1.5},
+        {ID: 3, Priority: 1, Weight: 1.0},
+        {ID: 4, Priority: 3, Weight: 2.5},
+        {ID: 5, Priority: 2, Weight: 1.2},
+        {ID: 6, Priority: 1, Weight: 1.8},
+        {ID: 7, Priority: 3, Weight: 2.0},
+        {ID: 8, Priority: 2, Weight: 1.0},
+        {ID: 9, Priority: 1, Weight: 1.5},
+        {ID: 10, Priority: 3, Weight: 2.2},
+    },
+    Params:    *params,
+    Scheduler: st,
+	ConsiderBlackout: ConsiderBlackOUT,
+}
+
             
             runSeed := seed + int64(run*100)
             rng := rand.New(rand.NewSource(runSeed))
@@ -1629,6 +1640,12 @@ func main() {
 				} else {
 					fmt.Println("Invalid integer value for seed")
 				}
+			case "blackout":
+				if x,err := strconv.ParseBool(valueStr); err == nil{
+					ConsiderBlackOUT = x 
+					fmt.Printf("Considering Blackouts to %t\n",x)
+				}
+
 			default:
 				fmt.Println("Unknown parameter. Use: T, chi, lambdaRen, overhead, dt, seed")
 			}
@@ -1653,6 +1670,7 @@ func main() {
     			},  
 				Consumers: []Consumer{{ID: 1, Priority: 2, Weight: 1.0}, {ID: 2, Priority: 3, Weight: 2.0}, {ID: 3, Priority: 1, Weight: 1.5}},
 				Params:    *params,
+				ConsiderBlackout: ConsiderBlackOUT,
 			}
 
 			var csvPath string

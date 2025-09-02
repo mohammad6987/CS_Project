@@ -93,3 +93,73 @@ EnergyPredictor = NewMLP(24, 16, rand.New(rand.NewSource(42)))
 - **State discretization for efficient learning**
 
 - **Reward function based on wait times, completion rates, and energy efficiency**
+
+
+
+
+## Simulation Results
+
+### Scheduler Comparison Analysis
+
+The following results summarize the performance of different scheduling algorithms under the current simulation parameters:
+
+**Simulation Parameters:**
+
+- Seed: 7  
+- Total Time (T): 50,000  
+- Chi Demand (χ): 2.00  
+- Lambda Renewable (λ_ren): 0.50  
+- Overhead Cost (C_overhead): 0.020  
+- Time Step (dt): 0.25 hours  
+
+#### Comparison Results (Averaged over 10 runs)
+
+| Scheduler | Avg Wait (s) | Completed | Unserved (kWh) | Backlog Size | Battery Δ (kWh) |
+|-----------|-------------|-----------|----------------|--------------|----------------|
+| FIFO      | 46.14 ± 0.13 | 48,234 ± 150 | 280,734.94 ± 2,065.96 | 79 | -17.00 |
+| NPPS      | 11.82 ± 0.13 | 48,358 ± 108 | 280,861.03 ± 2,056.68 | 56 | -17.00 |
+| WRR       | 24.94 ± 0.10 | 46,048 ± 200 | 280,619.51 ± 1,894.53 | 64 | -17.00 |
+| EDF       | 50.15 ± 0.07 | 36,426 ± 153 | 280,435.47 ± 2,068.76 | 90 | -17.00 |
+| Hybrid    | 11.89 ± 0.13 | 48,299 ± 111 | 280,858.94 ± 2,056.74 | 56 | -17.00 |
+
+
+1. **Hybrid and NPPS** schedulers achieve the **lowest average wait times** and maintain a **high number of completed requests**, demonstrating excellent efficiency under these simulation conditions.  
+2. **FIFO and EDF** show significantly higher wait times and lower completed requests, indicating they are less effective for high-demand or variable-priority scenarios.  
+3. **WRR** provides a moderate balance, performing better than FIFO and EDF in wait times, but slightly worse than NPPS and Hybrid in completed requests.  
+4. **Battery usage** remains consistent across all schedulers (Δ = -17 kWh), suggesting that scheduler choice primarily affects request handling rather than overall energy depletion.  
+5. **Backlog sizes** reflect that Hybrid and NPPS maintain smaller queues, efficiently handling requests without excessive backlog accumulation.  
+
+**Conclusion:**  
+The Hybrid scheduler effectively combines priority-based and deadline-aware strategies, achieving performance comparable to NPPS while balancing fairness and responsiveness. This makes it the most reliable choice under mixed-demand scenarios with renewable and non-renewable sources.
+
+
+### Blackout consequences:
+We ran simulations comparing different schedulers under two scenarios: considering power blackouts (Blackouts = true) and ignoring blackouts (Blackouts = false). Each scheduler was simulated over 10 runs, and the results were averaged.
+
+#### 1. With Blackouts (`Blackouts = true`)
+
+| Scheduler | Avg Wait (s) | Completed | Unserved (kWh) | Backlog Size | Battery Δ (kWh) |
+|-----------|-------------|-----------|----------------|--------------|----------------|
+| FIFO      | 34.55 ± 1.08 | 194 ± 6  | 726.85 ± 58.05 | 78           | -17.00         |
+| NPPS      | 9.98 ± 1.42  | 190 ± 9  | 861.06 ± 59.91 | 55           | -17.00         |
+| WRR       | 19.97 ± 1.29 | 187 ± 14 | 786.02 ± 84.37 | 66           | -17.00         |
+| EDF       | 35.61 ± 1.04 | 169 ± 8  | 667.93 ± 58.12 | 89           | -17.00         |
+| Hybrid    | 10.02 ± 1.58 | 190 ± 9  | 859.77 ± 62.53 | 55           | -17.00         |
+
+#### 2. Without Blackouts (`Blackouts = false`)
+
+| Scheduler | Avg Wait (s) | Completed | Unserved (kWh) | Backlog Size | Battery Δ (kWh) |
+|-----------|-------------|-----------|----------------|--------------|----------------|
+| FIFO      | 33.72 ± 2.32 | 203 ± 6  | 662.70 ± 120.84 | 82           | -17.00         |
+| NPPS      | 10.26 ± 1.02 | 202 ± 7  | 795.70 ± 124.79 | 58           | -17.00         |
+| WRR       | 20.17 ± 1.10 | 198 ± 11 | 739.29 ± 111.83 | 65           | -17.00         |
+| EDF       | 35.28 ± 2.07 | 178 ± 10 | 592.23 ± 129.09 | 94           | -17.00         |
+| Hybrid    | 10.31 ± 1.03 | 202 ± 7  | 795.20 ± 125.24 | 58           | -17.00         |
+
+
+
+
+- **Hybrid and NPPS** consistently achieve the **lowest average wait times**, both with and without blackouts.  
+- **FIFO and EDF** experience higher wait times and lower completion under blackouts.  
+- The presence of blackouts slightly reduces overall energy delivery (higher unserved kWh), but hybrid and NPPS maintain robustness.  
+- Hybrid scheduler effectively balances **priority and deadline awareness**, showing consistent performance in both scenarios.
