@@ -61,6 +61,7 @@ type EnergySource struct {
 	Efficiency  float64
 	FailureProb float64
 	DownUntil   int 
+	FailureHistory []OutageEvent
 }
 
 type Battery struct {
@@ -90,6 +91,24 @@ type Request struct {
 	ServedKW  float64
 	Served    bool
 }
+
+type OutageAnalysis struct {
+    OutageEvents         []OutageEvent
+    TotalOutageDuration  int
+    MaxOutageDuration    int
+    OutageImpactKWh      float64
+}
+
+type OutageEvent struct {
+    SourceName  string
+    StartTime   int
+    EndTime     int
+    Duration    int
+    ImpactKWh   float64
+}
+
+
+
 
 type SchedulerType int
 
@@ -168,6 +187,7 @@ type SimState struct {
 	Scheduler SchedulerType
 	Params    SimParams
 	UnservedKWh float64
+	
 }
 
 
@@ -229,6 +249,67 @@ func (s *SimState) generateRequests(rng *rand.Rand) {
 }
 
 
+func (s *SimState) hybridScheduler() []*Request {
+
+    backlogSize := len(s.Backlog)
+    totalDemand := 0.0
+    highPriorityDemand := 0.0
+    urgentRequests := 0
+    
+    for _, req := range s.Backlog {
+        totalDemand += req.AmountKWh
+        if req.Priority > 2 {
+            highPriorityDemand += req.AmountKWh
+        }
+        if s.Time > req.Deadline-10 { 
+            urgentRequests++
+        }
+    }
+    
+    if urgentRequests > backlogSize/3 {
+        // Use EDF when many requests are urgent
+        sort.SliceStable(s.Backlog, func(i, j int) bool { 
+            return s.Backlog[i].Deadline < s.Backlog[j].Deadline 
+        })
+    } else if highPriorityDemand > totalDemand/2 {
+        // Use NPPS when high priority demand is significant
+        sort.SliceStable(s.Backlog, func(i, j int) bool {
+            if s.Backlog[i].Priority == s.Backlog[j].Priority {
+                return s.Backlog[i].ArrivalTime < s.Backlog[j].ArrivalTime
+            }
+            return s.Backlog[i].Priority > s.Backlog[j].Priority
+        })
+    } else if backlogSize > 20 {
+        // Use WRR for large backlogs to ensure fairness
+        // Implement weighted round robin
+        groups := make(map[int][]*Request)
+        for _, req := range s.Backlog {
+            groups[req.Priority] = append(groups[req.Priority], req)
+        }
+        
+        // Clear backlog and reassemble in round-robin order
+        s.Backlog = s.Backlog[:0]
+        for i := 0; i < backlogSize; i++ {
+            for priority := 3; priority >= 1; priority-- {
+                if len(groups[priority]) > 0 {
+                    s.Backlog = append(s.Backlog, groups[priority][0])
+                    groups[priority] = groups[priority][1:]
+                }
+            }
+        }
+    } else {
+        // Default to FIFO
+        sort.SliceStable(s.Backlog, func(i, j int) bool { 
+            return s.Backlog[i].ArrivalTime < s.Backlog[j].ArrivalTime 
+        })
+    }
+    
+    batch := min(len(s.Backlog), s.Params.NProcessors*10)
+    return s.Backlog[:batch]
+}
+
+
+
 func (s *SimState) pickNextRequests(rng *rand.Rand) []*Request {
 	if len(s.Backlog) == 0 {
 		return nil
@@ -272,13 +353,7 @@ func (s *SimState) pickNextRequests(rng *rand.Rand) []*Request {
 			s.Backlog[0] = chosen
 		}
 	case HYBRID:
-		sort.SliceStable(s.Backlog, func(i, j int) bool {
-			if s.Backlog[i].Deadline == s.Backlog[j].Deadline {
-				// If equal deadline, higher weight first
-				return s.Backlog[i].Weight > s.Backlog[j].Weight
-			}
-			return s.Backlog[i].Deadline < s.Backlog[j].Deadline
-		})
+		return s.hybridScheduler()
 
 	}
 
