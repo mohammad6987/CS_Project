@@ -4,8 +4,8 @@ This project is a comprehensive simulation of a smart energy grid written in Go.
 
 ## Features
 
--   **Detailed Grid Simulation**: Simulates a microgrid with renewable (e.g., Solar) and non-renewable (e.g., Grid) energy sources, a battery for storage, and multiple consumers.
--   **Advanced Scheduling Policies**: Implements and compares several request scheduling algorithms:
+-   **Grid Simulation**: Simulates a microgrid with renewable (e.g., Solar) and non-renewable (e.g., Grid) energy sources, a battery for storage, and multiple consumers.
+-   **Scheduling Policies**: Implements and compares several request scheduling algorithms:
     -   `FIFO` (First-In, First-Out)
     -   `NPPS` (Non-Preemptive Priority Scheduling)
     -   `WRR` (Weighted Round Robin)
@@ -27,7 +27,6 @@ go mod tidy
 If you want Grafana to work , first run 
 ```
 docker-compose up --build
-
 ```
 and for Interactive CLI run :
 ```

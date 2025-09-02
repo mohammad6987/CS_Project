@@ -21,7 +21,7 @@ import (
 	"gonum.org/v1/gonum/stat/distuv"
 )
 
-
+// Required for integratign Prometheus
 
 var (
     avgWaitSteps = promauto.NewGaugeVec(prometheus.GaugeOpts{
@@ -46,9 +46,9 @@ var (
 )
 
 
-// ==========================
-// Model & Simulation Types
-// ==========================
+
+// Model & Simulation DataTypes
+
 
 type SourceType int
 
@@ -60,40 +60,40 @@ const (
 type EnergySource struct {
 	Name        string
 	Type        SourceType
-	CapacityKW  float64  // max instantaneous power available (kW)
-	AvailableKW float64  // dynamic available power (for renewables)
-	Efficiency  float64  // efficiency (0..1)
-	FailureProb float64  // probability of outage per step
+	CapacityKW  float64  
+	AvailableKW float64  
+	Efficiency  float64  
+	FailureProb float64  
 	DownUntil   int      // timestep until which source is down
 }
 
 type Battery struct {
 	CapacityKWh float64
 	LevelKWh    float64
-	ChargeRate  float64  // kW
-	DischargeRate float64 // kW
+	ChargeRate  float64  
+	DischargeRate float64 
 	Efficiency  float64
 }
 
 type Consumer struct {
 	ID         int
-	Priority   int     // higher means more priority (for NPPS)
-	Weight     float64 // for WRR (group weight)
-	Deadline   int     // absolute timestep deadline (for EDF)
+	Priority   int     
+	Weight     float64 
+	Deadline   int     
 }
 
 type Request struct {
-	Time       int     // arrival time
-	ConsumerID int
-	AmountKWh  float64 // energy needed
-	Priority   int
-	Weight     float64
-	Deadline   int
-	// metrics filled during simulation
-	StartTime int
-	EndTime   int
-	ServedKW  float64
-	Served    bool
+	ArrivalTime int     
+	ConsumerID  int
+	AmountKWh   float64 // energy needed
+	Priority    int
+	Weight      float64
+	Deadline    int
+	// filled during simulation
+	StartTime   int
+	EndTime     int
+	ServedKW    float64
+	Served      bool
 }
 
 type SchedulerType int
@@ -103,6 +103,7 @@ const (
 	NPPS
 	WRR
 	EDF
+	HYBRID
 )
 
 func (s SchedulerType) String() string {
@@ -115,6 +116,8 @@ func (s SchedulerType) String() string {
 		return "wrr"
 	case EDF:
 		return "edf"
+	case HYBRID:
+		return "hybrid"	
 	default:
 		return "unknown"
 	}
@@ -148,18 +151,18 @@ func (pq *ReqPQ) Pop() any {
 	return item
 }
 
-// Simulation Parameters
+// Simulation Parama
 
 type SimParams struct {
-	LambdaController float64 // λ1: exponential service parameter in controller (not used heavily in this simplified model)
-	LambdaRenewable  float64 // λ2: exponential for renewable availability changes
+	LambdaController float64 // lambda1: exponential service parameter in controller 
+	LambdaRenewable  float64 // lambda2: exponential for renewable availability changes
 	ChiDemand        float64 // χ: Poisson for consumer request arrivals per step
 	OverheadC        float64 // C: overhead (kWh) to route to a specific source
 	ProcDelayT       int     // t: processing delay in steps between requests
 	TotalTime        int     // T: total steps
-	NProcessors      int     // N: processors in controller (kept 1 for simplicity)
-	PToSource        float64 // P: probability a request is sent to a particular (renewable/storage) source first
-	TimeStepHours    float64 // conversion of one step to hours (e.g., 0.25 => 15 minutes)
+	NProcessors      int     // N: processors in controller 
+	PToSource        float64 // P: probability a request is sent to a particular source first
+	TimeStepHours    float64 // conversion of one step to hours 
 }
 
 // Simulation State
@@ -177,9 +180,9 @@ type SimState struct {
 	UnservedKWh float64
 }
 
-// ==========================
+
 // Generators & Utilities
-// ==========================
+
 
 func newPoisson(r *rand.Rand, rate float64) distuv.Poisson {
 	return distuv.Poisson{Lambda: rate, Src: r}
@@ -191,7 +194,7 @@ func newExp(r *rand.Rand, rate float64) distuv.Exponential {
 
 func clamp(x, lo, hi float64) float64 { if x < lo { return lo }; if x > hi { return hi }; return x }
 
-// Update renewable availability and outages
+
 func (s *SimState) updateSources(rng *rand.Rand) {
 	for _, src := range s.Sources {
 		if s.Time < src.DownUntil { // in outage
@@ -225,7 +228,7 @@ func (s *SimState) generateRequests(rng *rand.Rand) {
 		amt := 0.5 + rng.Float64()*3.0 // kWh demand
 		deadline := s.Time + 2 + rng.Intn(12) // steps
 		req := &Request{
-			Time: s.Time, ConsumerID: c.ID, AmountKWh: amt,
+			ArrivalTime: s.Time, ConsumerID: c.ID, AmountKWh: amt,
 			Priority: c.Priority, Weight: c.Weight, Deadline: deadline,
 			StartTime: -1, EndTime: -1,
 		}
@@ -233,26 +236,23 @@ func (s *SimState) generateRequests(rng *rand.Rand) {
 	}
 }
 
-// ==========================
+
 // Scheduling Policies
-// ==========================
+
 
 func (s *SimState) pickNextRequests(rng *rand.Rand) []*Request {
 	if len(s.Backlog) == 0 { return nil }
 	switch s.Scheduler {
 	case FIFO:
-		// sort by arrival time
-		sort.SliceStable(s.Backlog, func(i, j int) bool { return s.Backlog[i].Time < s.Backlog[j].Time })
+		sort.SliceStable(s.Backlog, func(i, j int) bool { return s.Backlog[i].ArrivalTime < s.Backlog[j].ArrivalTime })
 	case NPPS:
-		// higher priority first, if same then earlier arrival
 		sort.SliceStable(s.Backlog, func(i, j int) bool {
 			if s.Backlog[i].Priority == s.Backlog[j].Priority {
-				return s.Backlog[i].Time < s.Backlog[j].Time
+				return s.Backlog[i].ArrivalTime < s.Backlog[j].ArrivalTime
 			}
 			return s.Backlog[i].Priority > s.Backlog[j].Priority
 		})
 	case EDF:
-		// earliest deadline first
 		sort.SliceStable(s.Backlog, func(i, j int) bool { return s.Backlog[i].Deadline < s.Backlog[j].Deadline })
 	case WRR:
 		// weighted round-robin by sampling proportional to weight over one step
@@ -344,14 +344,14 @@ func (s *SimState) step(rng *rand.Rand) {
 	s.Time++
 }
 
-// Run simulation and compute KPIs: average wait, unserved percentage, renewable fraction
+// average wait, unserved percentage, renewable fraction
 func (s *SimState) run(rng *rand.Rand) map[string]float64 {
 	startBatt := s.Battery.LevelKWh
 	for s.Time < s.Params.TotalTime { s.step(rng) }
 	// KPIs
 	var waitSum float64
 	for _, r := range s.Completed {
-		waitSum += float64(r.EndTime - r.Time)
+		waitSum += float64(r.EndTime - r.ArrivalTime)
 	}
 	avgWait := 0.0
 	if len(s.Completed) > 0 { avgWait = waitSum / float64(len(s.Completed)) }
@@ -453,7 +453,7 @@ type TreeNode struct {
 	Left    *TreeNode
 	Right   *TreeNode
 	Leaf    bool
-	Value   float64 // for regression; for classification use majority vote (not fully implemented here)
+	Value   float64 
 }
 
 type RFParams struct {
@@ -909,6 +909,50 @@ func mae(y, yhat []float64) float64 {
 	return s/float64(n)
 }
 
+
+
+
+func loadRequestsCSV(path string) ([]*Request, error) {
+    f, err := os.Open(path)
+    if err != nil {
+        return nil, err
+    }
+    defer f.Close()
+
+    r := csv.NewReader(bufio.NewReader(f))
+    rows, err := r.ReadAll()
+    if err != nil {
+        return nil, err
+    }
+
+    var reqs []*Request
+    for i, row := range rows {
+        if i == 0 {
+            continue // skip header
+        }
+        if len(row) < 5 {
+            continue
+        }
+
+        t, _ := strconv.Atoi(strings.TrimSpace(row[0]))          // Time
+        cid, _ := strconv.Atoi(strings.TrimSpace(row[1]))        // ConsumerID
+        amt, _ := strconv.ParseFloat(strings.TrimSpace(row[2]), 64) // AmountKWh
+        prio, _ := strconv.Atoi(strings.TrimSpace(row[3]))       // Priority
+        dl, _ := strconv.Atoi(strings.TrimSpace(row[4]))         // Deadline
+
+        reqs = append(reqs, &Request{
+            ArrivalTime:       t,
+            ConsumerID: cid,
+            AmountKWh:  amt,
+            Priority:   prio,
+            Deadline:   dl,
+            StartTime:  -1,
+            EndTime:    -1,
+        })
+    }
+    return reqs, nil
+}
+
 // ==========================
 // CLI & Main
 // ==========================
@@ -1037,59 +1081,81 @@ func main() {
 			}
 
 		case "simulate":
-			if len(args) < 1 {
-				fmt.Println("Usage: simulate <scheduler>")
-				continue
-			}
-			scheduler := args[0]
-			rng := rand.New(rand.NewSource(seed))
+    if len(args) < 1 {
+        fmt.Println("Usage: simulate <scheduler> [-csv <path>]")
+        continue
+    }
 
-			base := &SimState{
-				Sources: []*EnergySource{
-					{Name: "Solar", Type: Renewable, CapacityKW: 8, AvailableKW: 8, Efficiency: 0.95, FailureProb: 0.01},
-					{Name: "Grid", Type: NonRenewable, CapacityKW: 10, AvailableKW: 10, Efficiency: 0.98, FailureProb: 0.005},
-				},
-				Battery:   &Battery{CapacityKWh: 20, LevelKWh: 10, ChargeRate: 4, DischargeRate: 4, Efficiency: 0.92},
-				Consumers: []Consumer{{ID: 1, Priority: 2, Weight: 1.0}, {ID: 2, Priority: 3, Weight: 2.0}, {ID: 3, Priority: 1, Weight: 1.5}},
-				Params:    *params,
-			}
+    scheduler := args[0]
+    rng := rand.New(rand.NewSource(seed))
 
-			if scheduler == "ql" {
-				fmt.Println("Training Q-Learning agent...")
-				agent := trainQLearning(base, 25, params.TotalTime, seed)
-				fmt.Println("Deploying QL policy...")
-				s := *base
-				s.Time = 0
-				s.Backlog = nil
-				s.Completed = nil
-				s.UnservedKWh = 0
-				for s.Time < s.Params.TotalTime {
-					st := observeState(&s)
-					bestA := FIFO
-					bestV := math.Inf(-1)
-					for _, a := range []SchedulerType{FIFO, NPPS, WRR, EDF} {
-						v := agent.Q[st][a]
-						if v > bestV {
-							bestV = v
-							bestA = a
-						}
-					}
-					s.Scheduler = bestA
-					s.step(rng)
-				}
-				kpis := s.runStatsOnly()
-				fmt.Println("QL policy KPIs:", kpis)
-			} else {
-				schedMap := map[string]SchedulerType{"fifo": FIFO, "npps": NPPS, "wrr": WRR, "edf": EDF}
-				sType, ok := schedMap[strings.ToLower(scheduler)]
-				if !ok {
-					fmt.Printf("Unknown scheduler: %s\n", scheduler)
-					continue
-				}
-				base.Scheduler = sType
-				kpis := base.run(rng)
-				fmt.Println("Scheduler:", sType, "KPIs:", kpis)
-			}
+    base := &SimState{
+        Sources: []*EnergySource{
+            {Name: "Solar", Type: Renewable, CapacityKW: 8, AvailableKW: 8, Efficiency: 0.95, FailureProb: 0.01},
+            {Name: "Grid", Type: NonRenewable, CapacityKW: 10, AvailableKW: 10, Efficiency: 0.98, FailureProb: 0.005},
+        },
+        Battery:   &Battery{CapacityKWh: 20, LevelKWh: 10, ChargeRate: 4, DischargeRate: 4, Efficiency: 0.92},
+        Consumers: []Consumer{{ID: 1, Priority: 2, Weight: 1.0}, {ID: 2, Priority: 3, Weight: 2.0}, {ID: 3, Priority: 1, Weight: 1.5}},
+        Params:    *params,
+    }
+
+    // check for -csv flag
+    var csvPath string
+    for i := 1; i < len(args); i++ {
+        if args[i] == "-csv" && i+1 < len(args) {
+            csvPath = args[i+1]
+            i++
+        }
+    }
+
+    if scheduler == "ql" {
+        fmt.Println("Training Q-Learning agent...")
+        agent := trainQLearning(base, 25, params.TotalTime, seed)
+        fmt.Println("Deploying QL policy...")
+        s := *base
+        s.Time = 0
+        s.Backlog = nil
+        s.Completed = nil
+        s.UnservedKWh = 0
+        for s.Time < s.Params.TotalTime {
+            st := observeState(&s)
+            bestA := FIFO
+            bestV := math.Inf(-1)
+            for _, a := range []SchedulerType{FIFO, NPPS, WRR, EDF} {
+                v := agent.Q[st][a]
+                if v > bestV {
+                    bestV = v
+                    bestA = a
+                }
+            }
+            s.Scheduler = bestA
+            s.step(rng)
+        }
+        kpis := s.runStatsOnly()
+        fmt.Println("QL policy KPIs:", kpis)
+    } else {
+        schedMap := map[string]SchedulerType{"fifo": FIFO, "npps": NPPS, "wrr": WRR, "edf": EDF}
+        sType, ok := schedMap[strings.ToLower(scheduler)]
+        if !ok {
+            fmt.Printf("Unknown scheduler: %s\n", scheduler)
+            continue
+        }
+        base.Scheduler = sType
+
+        if csvPath != "" {
+            fmt.Println("Loading requests from CSV:", csvPath)
+            reqs, err := loadRequestsCSV(csvPath)
+            if err != nil {
+                fmt.Println("Error loading CSV:", err)
+                continue
+            }
+            base.Backlog = reqs
+        }
+
+        kpis := base.run(rng)
+        fmt.Println("Scheduler:", sType, "KPIs:", kpis)
+    }
+			
 
 		case "ml":
 			if len(args) < 1 {
@@ -1190,7 +1256,7 @@ func main() {
 func (s *SimState) runStatsOnly() map[string]float64 {
 	// compute KPIs on completed/queues without further stepping
 	var waitSum float64
-	for _, r := range s.Completed { waitSum += float64(r.EndTime - r.Time) }
+	for _, r := range s.Completed { waitSum += float64(r.EndTime - r.ArrivalTime) }
 	avgWait := 0.0
 	if len(s.Completed) > 0 { avgWait = waitSum / float64(len(s.Completed)) }
 	served := float64(len(s.Completed))
