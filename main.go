@@ -273,7 +273,17 @@ func (s *SimState) pickNextRequests(rng *rand.Rand) []*Request {
 			copy(s.Backlog[1:idx+1], s.Backlog[0:idx])
 			s.Backlog[0] = chosen
 		}
-	}
+	case HYBRID : 
+		sort.SliceStable(s.Backlog, func(i, j int) bool {
+        if s.Backlog[i].Deadline == s.Backlog[j].Deadline {
+            // If equal deadline, higher weight first
+            return s.Backlog[i].Weight > s.Backlog[j].Weight
+        }
+        return s.Backlog[i].Deadline < s.Backlog[j].Deadline
+    })
+
+}
+
 	// Return a small batch to attempt service this step
 	batch := 3
 	if len(s.Backlog) < batch { batch = len(s.Backlog) }
