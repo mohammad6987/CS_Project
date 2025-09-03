@@ -18,6 +18,10 @@ import (
 
 	"gonum.org/v1/gonum/mat"
 	"gonum.org/v1/gonum/stat/distuv"
+
+	"github.com/prometheus/client_golang/prometheus"
+    "github.com/prometheus/client_golang/prometheus/promhttp"
+
 )
 
 //
@@ -25,6 +29,35 @@ import (
 // Types
 // ────────────────────────────────────────────────────────────────────────────────
 //
+
+
+var (
+    kpiAvgWait = prometheus.NewGauge(prometheus.GaugeOpts{
+        Name: "smartgrid_avg_wait_steps",
+        Help: "Average wait time in steps",
+    })
+    kpiCompleted = prometheus.NewGauge(prometheus.GaugeOpts{
+        Name: "smartgrid_completed_requests",
+        Help: "Number of completed requests",
+    })
+    kpiUnserved = prometheus.NewGauge(prometheus.GaugeOpts{
+        Name: "smartgrid_unserved_kwh",
+        Help: "Total unserved energy (kWh)",
+    })
+    kpiBacklog = prometheus.NewGauge(prometheus.GaugeOpts{
+        Name: "smartgrid_backlog_size",
+        Help: "Backlog size (#requests)",
+    })
+    kpiOutages = prometheus.NewGauge(prometheus.GaugeOpts{
+        Name: "smartgrid_outage_count",
+        Help: "Number of outages observed",
+    })
+)
+
+func init() {
+    prometheus.MustRegister(kpiAvgWait, kpiCompleted, kpiUnserved, kpiBacklog, kpiOutages)
+}
+
 
 type SourceType int
 
@@ -426,7 +459,7 @@ func (s *SimState) run(rng *rand.Rand) map[string]float64 {
         }
 		s.step(rng)
 	}
-	// KPIs
+	
 	var waitSum float64
 	for _, r := range s.Completed {
 		waitSum += float64(r.EndTime - r.ArrivalTime)
@@ -455,6 +488,13 @@ func (s *SimState) run(rng *rand.Rand) map[string]float64 {
 	if totKW > 0 {
 		renFrac = renKW / totKW
 	}
+
+	kpiAvgWait.Set(avgWait)
+	kpiCompleted.Set(float64(len(s.Completed)))
+	kpiUnserved.Set(s.UnservedKWh)
+	kpiBacklog.Set(float64(len(s.Backlog)))
+	kpiOutages.Set(float64(totalOutages))
+
 	return map[string]float64{
 		"avg_wait_steps":           avgWait,
 		"completed_reqs":           float64(len(s.Completed)),
@@ -1031,13 +1071,10 @@ func printHelp() {
 }
 
 func main() {
-	// (optional) metrics endpoint to keep parity with your env
 	go func() {
-		log.Println("Metrics endpoint :2112 (noop handler)")
-		http.HandleFunc("/metrics", func(w http.ResponseWriter, r *http.Request) {
-			_, _ = w.Write([]byte("# metrics disabled in this trimmed example\n"))
-		})
-		_ = http.ListenAndServe(":2112", nil)
+    	log.Println("Prometheus metrics available on :2112/metrics")
+    	http.Handle("/metrics", promhttp.Handler())
+    	_ = http.ListenAndServe(":2112", nil)
 	}()
 
 	params := &SimParams{
