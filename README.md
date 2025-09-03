@@ -122,17 +122,49 @@ simulate fifo -json state.json
 
 ## Simulation Results
 
+### Effect of Using Forecasting (Mainly NN)
+### Effect of Using Forecasting (Mainly NN)
 
-### Effect of Using Forecasting(Mainly NN) :
-| Scheduler | Avg Wait (s) | Completed | Unserved (kWh) | Backlog Size | Battery Δ (kWh) |
-|-----------|-------------|-----------|----------------|--------------|----------------|
-| FIFO      | 20.49 ± 0.15 | 48,234 ± 150 | 280,734.94 ± 2,065.96 | 79 | -17.00 |
-| HYBRID    | 11.82 ± 0.13 | 48,358 ± 108 | 280,861.03 ± 2,056.68 | 56 | -17.00 |
- 
+**Without Forecasting**
+
+| Scheduler | Avg Wait (steps) | Completed Requests | Unserved Energy (kWh) | Backlog Size |
+|-----------|------------------|-------------------|----------------------|-------------|
+| FIFO      | 20.50            | 397               | 27,513,926.28        | 80,000      |
+| Hybrid    | 19.00            | 430               | 36,713,384.70        | 80,000      |
+| NPPS      | 112.08           | 304               | 26,246,627.78        | 80,000      |
+
+**With Forecasting**
+
+| Scheduler | Avg Wait (steps) | Completed Requests | Unserved Energy (kWh) | Backlog Size |
+|-----------|------------------|-------------------|----------------------|-------------|
+| FIFO      | 21.58            | 475               | 26,442,783.24        | 80,000      |
+| Hybrid    | 19.98            | 432               | 38,137,914.52        | 80,000      |
+| NPPS      | 15.89            | 482               | 47,462,078.80        | 80,000      |
+
+### Key Observations
+
+**Forecasting Impact:**
+- FIFO scheduler showed improved performance with forecasting (+19.6% completed requests, -3.9% unserved energy)
+- Hybrid scheduler showed slightly worse performance with forecasting (+0.5% completed requests, +3.9% unserved energy)
+- NPPS scheduler showed dramatic improvements in wait time (-85.8%) and completed requests (+58.6%), but significantly worse unserved energy (+80.8%)
+
+**Scheduler Comparison:**
+- The hybrid scheduler generally outperformed others in terms of wait time without forecasting
+- FIFO showed better performance in terms of completed requests when using forecasting
+- NPPS with forecasting achieved the best wait time (15.89 steps) and highest completed requests (482)
+
+**Backlog Management:**
+- All schedulers struggled with backlog management, consistently ending with 80,000 requests in backlog
+- This suggests the simulation parameters might need adjustment to better handle request volume
+
+**Energy Management:**
+- The high unserved energy values indicate significant energy shortfalls in the system
+- Forecasting helped reduce energy shortfalls for FIFO but increased them for both Hybrid and NPPS
+- NPPS with forecasting showed the highest energy shortfall despite its other performance improvements
+
 
 ### Scheduler Comparison Analysis
 
-The following results summarize the performance of different scheduling algorithms under the current simulation parameters:
 
 **Simulation Parameters:**
 
