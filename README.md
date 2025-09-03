@@ -122,6 +122,14 @@ simulate fifo -json state.json
 
 ## Simulation Results
 
+
+### Effect of Using Forecasting(Mainly NN) :
+| Scheduler | Avg Wait (s) | Completed | Unserved (kWh) | Backlog Size | Battery Δ (kWh) |
+|-----------|-------------|-----------|----------------|--------------|----------------|
+| FIFO      | 20.49 ± 0.15 | 48,234 ± 150 | 280,734.94 ± 2,065.96 | 79 | -17.00 |
+| HYBRID    | 11.82 ± 0.13 | 48,358 ± 108 | 280,861.03 ± 2,056.68 | 56 | -17.00 |
+ 
+
 ### Scheduler Comparison Analysis
 
 The following results summarize the performance of different scheduling algorithms under the current simulation parameters:

@@ -323,10 +323,10 @@ func (s *SimState) scheduleOrder() []*Request {
 func (s *SimState) serveRequests(rng *rand.Rand) {
 	// available energy this step (KW * hours)
 
-	if s.Time%10 == 0 {
+	/*if s.Time%10 == 0 {
     	fmt.Printf("Step %d / %d backlog=%d completed=%d\n",
         s.Time, s.Params.TotalTime, len(s.Backlog), len(s.Completed))
-	}
+	}*/
 
 	totalKW := 0.0
 	for _, src := range s.Sources {
@@ -388,7 +388,7 @@ func (s *SimState) serveRequests(rng *rand.Rand) {
 	}
 
 	if len(s.Backlog) > 80000 {
-    	fmt.Println("Backlog exceeded 50k, trimming")
+    	//fmt.Println("Backlog exceeded 50k, trimming")
     	s.Backlog = s.Backlog[len(s.Backlog)-80000:]
 	}
 }
@@ -822,6 +822,8 @@ func (m *MLP) stepBatch(Bx *mat.Dense, By *mat.VecDense) {
 			Z1.Set(i, j, Z1.At(i, j)+m.B1.AtVec(j))
 		}
 	}
+
+	
 	A1 := mat.NewDense(n, m.H, nil)
 	for i := 0; i < n; i++ {
 		for j := 0; j < m.H; j++ {
@@ -839,8 +841,10 @@ func (m *MLP) stepBatch(Bx *mat.Dense, By *mat.VecDense) {
 	for i := 0; i < n; i++ {
 		D2.SetVec(i, D2.AtVec(i)-By.AtVec(i))
 	}
+
 	// grads
 	var dW2 mat.Dense
+	// Correct: A1.T() is (H, n), D2 is (n, 1). Result (H, 1) which is dW2.
 	dW2.Mul(A1.T(), &D2)
 	for i := 0; i < dW2.RawMatrix().Rows; i++ { // scale by n
 		for j := 0; j < dW2.RawMatrix().Cols; j++ {
@@ -853,14 +857,21 @@ func (m *MLP) stepBatch(Bx *mat.Dense, By *mat.VecDense) {
 
 	// backprop to hidden: D1 = (D2 * W2^T) ⊙ relu'(Z1)
 	var D1 mat.Dense
-	D1.Mul(D2.T(), m.W2.T()) // (1,n) * (1,h) -> (1,h), but we need (n,h)
-	// Expand per row:
+	// D2 (n, 1)
+	// m.W2.T() (1, H)
+	// Result D1 will be (n, H)
+	D1.Mul(&D2, m.W2.T()) // Corrected line here
+
+	// Now you need to perform the element-wise multiplication with relu'(Z1)
+	// You were trying to do this within your 'DD' loop, but it's more direct now.
 	DD := mat.NewDense(n, m.H, nil)
 	for i := 0; i < n; i++ {
 		for j := 0; j < m.H; j++ {
-			DD.Set(i, j, D2.AtVec(i)*m.W2.At(j, 0)*reluDeriv(Z1.At(i, j)))
+			// D1.At(i, j) already has (D2 * W2^T) element
+			DD.Set(i, j, D1.At(i, j)*reluDeriv(Z1.At(i, j)))
 		}
 	}
+
 	var dW1 mat.Dense
 	dW1.Mul(Bx.T(), DD)
 	for i := 0; i < dW1.RawMatrix().Rows; i++ {
@@ -1189,7 +1200,7 @@ func main() {
 						}
 						Y[i] = math.Max(0.5, Y[i])
 					}
-					mlp.Train(X, Y, 25, 32)
+					mlp.Train(X, Y, 25, 16)
 					base.EnergyPredictor = mlp
 					fmt.Println("Forecast predictor initialized (synthetic, time-of-day).")
 				}

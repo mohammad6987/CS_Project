@@ -34,15 +34,15 @@
   ],
   "backlog": [],
   "params": {
-    "lambdaController": 0.5,
-    "lambdaRenewable": 0.5,
-    "chiDemand": 1.2,
-    "overheadC": 0.01,
+    "lambdaController": 1.5,
+    "lambdaRenewable": 2.0,
+    "chiDemand": 0.001,
+    "overheadC": 0.02,
     "procDelayT": 1,
     "totalTime": 200,
     "nProcessors": 1,
     "pToSource": 0.5,
-    "timeStepHours": 0.25
+    "timeStepHours": 1
   },
-  "useForecast": false
+  "useForecast": true
 }
