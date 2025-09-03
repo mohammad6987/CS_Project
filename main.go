@@ -210,8 +210,12 @@ func clampInt(x, lo, hi int) int {
 
 func (s *SimState) updateSources(rng *rand.Rand) {
 	for _, src := range s.Sources {
-		// random failures
 		if rng.Float64() < src.FailureProb {
+			ev := OutageEvent{
+                SourceName: src.Name,
+                StartTime:  s.Time,
+            }
+            src.FailureEvents = append(src.FailureEvents, ev)
 			dur := rng.Intn(6) + 1
 			src.DownUntil = s.Time + dur
 			src.AvailableKW = 0
@@ -222,6 +226,17 @@ func (s *SimState) updateSources(rng *rand.Rand) {
 			src.AvailableKW = 0
 			continue
 		}
+
+		 if len(src.FailureEvents) > 0 {
+            last := &src.FailureEvents[len(src.FailureEvents)-1]
+            if last.EndTime == 0 {
+                last.EndTime = s.Time
+                last.Duration = last.EndTime - last.StartTime
+                // Rough impact: capacity lost * duration * timestep
+                last.ImpactKWh = src.CapacityKW * float64(last.Duration) * s.Params.TimeStepHours
+            }
+        }
+
 		// availability
 		if src.Type == Renewable {
 			shock := newExp(rng, s.Params.LambdaRenewable).Rand()
@@ -420,7 +435,7 @@ func (s *SimState) run(rng *rand.Rand) map[string]float64 {
 	if len(s.Completed) > 0 {
 		avgWait = waitSum / float64(len(s.Completed))
 	}
-	// renewable fraction (capacity weighted)
+
 	totKW, renKW := 0.0, 0.0
 	for _, src := range s.Sources {
 		totKW += src.CapacityKW * src.Efficiency
@@ -428,16 +443,26 @@ func (s *SimState) run(rng *rand.Rand) map[string]float64 {
 			renKW += src.CapacityKW * src.Efficiency
 		}
 	}
+	totalOutages := 0
+	totalDuration := 0
+	for _, src := range s.Sources {
+    	for _, ev := range src.FailureEvents {
+        	totalOutages++
+        	totalDuration += ev.Duration
+    	}	
+	}
 	renFrac := 0.0
 	if totKW > 0 {
 		renFrac = renKW / totKW
 	}
 	return map[string]float64{
-		"avg_wait_steps":          avgWait,
-		"completed_reqs":          float64(len(s.Completed)),
-		"unserved_kwh":            s.UnservedKWh,
-		"backlog_size":            float64(len(s.Backlog)),
-		"renewable_frac_capacity": renFrac,
+		"avg_wait_steps":           avgWait,
+		"completed_reqs":           float64(len(s.Completed)),
+		"unserved_kwh":             s.UnservedKWh,
+		"backlog_size":             float64(len(s.Backlog)),
+		"renewable_frac_capacity":  renFrac,
+		"outage_count" :		    float64(totalOutages),
+		"outage_total_duration" :   float64(totalDuration),
 	}
 }
 
