@@ -1,173 +1,124 @@
 # SmartGrid Simulator
-## Introduction
-This project is a comprehensive simulation of a smart energy grid written in Go. It models energy sources, storage, and consumers, and implements various scheduling algorithms to manage energy requests. The application also includes modules for applying machine learning (for forecasting and clustering) and reinforcement learning (for optimizing scheduling policies).
 
+## Introduction
+This project is a simulation of a smart energy grid written in Go. It models energy sources, storage, and consumers, and implements various scheduling algorithms to manage energy requests.  
+It also includes machine learning modules for forecasting and clustering and a reinforcement-learning module for optimising scheduling policies.
+
+---
 
 ## Key Features
-### Core Simulation 
-- **Energy Source Modeling** : Renewable (solar) and non-renewable (grid) energy sources with configurable capacity and failure probabilities
 
-- **Battery Storage** : Realistic battery system with charge/discharge rates and efficiency factors
-
-- **Consumer Modeling** : Multiple consumer types with different priorities, weights, and consumption patterns
-
-- **Time-Step Simulation** : Configurable time resolution for accurate energy flow modeling
+### Core Simulation
+- **Energy Source Modelling** — Renewable (solar) and non-renewable (grid) energy sources with configurable capacity and failure probabilities.
+- **Battery Storage** — Realistic battery system with charge/discharge rates and efficiency factors.
+- **Consumer Modelling** — Multiple consumer types with different priorities, weights and consumption patterns.
+- **Time-Step Simulation** — Configurable time resolution for accurate energy-flow modelling.
 
 ### Scheduling Algorithms
-- **FIFO** : Processes requests in arrival order
+- **FIFO** — Processes requests in arrival order.
+- **NPPS** — Prioritises higher-priority requests.
+- **WRR** — Distributes energy based on consumer weights.
+- **EDF** — Prioritises requests with closest deadlines.
+- **HYBRID** — Adaptive combination of the above based on conditions.
 
-- **NPPS** : Prioritizes higher-priority requests
-
-- **WRR** : Distributes energy based on consumer weights
-
-- **EDF** :  Prioritizes requests with closest deadlines
-
-- **HYBRID** : Adaptive combinations of the above approaches based on different conditions
-
-### Machine Learning Integration 
-- **Energy Forecasting**: Linear Regression, Random Forest, and Neural Network models for demand prediction
-
-- **Consumer Clustering**: K-Means and DBSCAN algorithms for grouping consumers by usage patterns
-
-- **Real-time Adaptation**: ML models integrated into the simulation for dynamic adjustment
+### Machine Learning Integration
+- **Energy Forecasting** — Linear Regression, Random Forest and Neural Network models for demand prediction.  
+  The `ml forecast` command now prints **linear regression weights**, Random Forest parameters and NN hyperparameters so you can see what the models learned.
+- **Consumer Clustering** — K-Means and DBSCAN for grouping consumers by usage patterns.
+- **Real-Time Adaptation** — ML models can be plugged directly into the simulation to drive **forecast-based request generation** (using the `-forecast` or `-forecast-csv` flags).
 
 ### Monitoring & Analytics
-- **Prometheus Metrics** : Real-time monitoring of key performance indicators
+- **Prometheus Metrics** — Real-time monitoring of key performance indicators.
+- **Grafana Dashboards** — Visualisations for simulation metrics and results.
 
-- **Grafana Dashboards** : Visualizations for simulation metrics and results
-
+---
 
 ## Installation & Configuration
-### Insatlltion
-first you need docker installed (for grafana and prometheus but it doesn't effect the program execution)
-use this command to isntall required golang libraries : 
-```
+
+### Installation
+First install Docker (only needed for Grafana/Prometheus).  
+Install required Go libraries:
+
+```bash
 go mod tidy
 ```
-### Commands
-If you want Grafana to work , first run 
+### Running Grafana Dashboard
+run 
 ```
 docker-compose up --build
 ```
-and for Interactive CLI run :
+### CLI
+run 
 ```
 go run main.go
 ```
-for more info use :
+### Commands
+#### Simulation
 ```
-help 
+simulate <fifo|npps|wrr|edf|hybrid> [-json state.json] [-csv reqs.csv] [-forecast] [-forecast-csv data.csv -target Target]
 ```
 
-### Configuration
-The simulation can be configured through a JSON configuration file or via CLI commands. Key parameters include:
-- **Time Settings**: Simulation duration, time step resolution
+- **json state.json** — load a complete simulation state (sources, batteries, consumers, params, backlog) from a JSON file.
 
-- **Energy Sources**: Capacity, efficiency, failure probabilities
+- **csv reqs.csv** — load only the backlog/requests from a CSV file.
 
-- **Battery System**: Capacity, charge/discharge rates, efficiency
+- **forecast** — use the built-in predictor for request generation.
 
-- **Consumer Models**: Priorities, weights, consumption patterns
+- **forecast-csv data.csv -target Demand** — train the predictor on a real CSV before running simulation.
 
-- **Scheduling Parameters**: Algorithm-specific settings
+During simulation, KPIs (average wait, backlog size, completed requests, renewable fraction, unserved kWh) are printed at the end.
 
-
-## Code Structure
-
-### Energy Generators Models :
-####  EnergySource
-
-Represents an individual energy generation unit (e.g., a solar farm, a gas plant).
-
-- Name: Unique identifier for the source.
-
-- Type: Categorization of the source (e.g., Renewable, NonRenewable).
-
-- CapacityKW: Maximum power output capability in kilowatts.
-
-- AvailableKW: Current available power output in kilowatts.
-
-- Efficiency: Conversion efficiency of the source (e.g., fuel to electricity).
-
-- FailureProb: Probability of this source failing at any given time step.
-
-- DownUntil: The simulation time step until which the source remains offline due to a failure.
-
-- FailureHistory: A record of past outage events for this source.
-
-#### Battery
-
-Represents an energy storage unit.
-
-- CapacityKWh: Total energy storage capacity in kilowatt-hours.
-
-- LevelKWh: Current energy stored in kilowatt-hours.
-
-- ChargeRate: Maximum power at which the battery can be charged (kW).
-
-- DischargeRate: Maximum power at which the battery can be discharged (kW).
-
-- Efficiency: Round-trip efficiency for charging and discharging.
-
-### Energy Consumers and Requests :
-#### Consumer
-
-Represents an entity that requires energy (e.g., a household, a factory).
-
-- ID: Unique identifier for the consumer.
-
-- Priority: Importance level of the consumer's requests.
-
-- Weight: A factor used in weighted scheduling algorithms.
-
-- Deadline: The time step by which a consumer's request ideally needs to be served.
-
-#### Request
-
-Represents a specific demand for energy from a consumer.
-
-- ArrivalTime: The simulation time step when the request was generated.
-
-- ConsumerID: The ID of the consumer making this request.
-
-- AmountKWh: The total energy (kilowatt-hours) required by this request.
-
-- Priority: The priority of this specific request (can differ from consumer's general priority).
-
-- Weight: The weight of this specific request.
-
-- Deadline: The time step by which this request must be fulfilled.
-
-- StartTime: The time step when serving this request began.
-
-- EndTime: The time step when serving this request was completed.
-
-- ServedKW: The amount of power (KW) already served for this request in the current timestep.
-
-- Served: A boolean indicating if the request has been fully served.
-
-### Neural Network Model :
-- 2-layer architecture with configurable hidden units**
-
-- Adam optimization for efficient training
-
-- ReLU activation functions
-
-- Support for regression and classification tasks
+#### Machine Learning
 ```
-EnergyPredictor *MLP
-EnergyPredictor = NewMLP(24, 16, rand.New(rand.NewSource(42)))
+ml forecast -csv data.csv -target Target
 ```
-![Alt text](./mlp.png)
+Trains Linear Regression, Random Forest and NN models on your CSV and prints metrics plus:
 
-### Reinforcement Learning : 
-- **Q-Learning implementation for policy optimization**
+- Learned LR coefficients.
 
-- **State discretization for efficient learning**
+- Random Forest parameters.
 
-- **Reward function based on wait times, completion rates, and energy efficiency**
+- NN hidden size & learning rate.
 
+#### Parameter Tunning
+```
+set <param> <value>   # e.g. set T 500
+status                # show current params
+```
 
+### Configuration Via JSON 
+You can configure the entire simulation via a JSON file. Example:
+```json
+{
+  "sources": [
+    {"name":"Solar","type":0,"capacityKW":25,"availableKW":25,"efficiency":0.95,"failureProb":0.01},
+    {"name":"Grid","type":1,"capacityKW":20,"availableKW":20,"efficiency":0.98,"failureProb":0.002}
+  ],
+  "batteries": [
+    {"capacityKWh":15,"levelKWh":7,"chargeRate":5,"dischargeRate":5,"efficiency":0.9}
+  ],
+  "consumers": [
+    { "id": 1, "priority": 1, "weight": 1.0, "deadline": 20 },
+    { "id": 2, "priority": 2, "weight": 1.2, "deadline": 25 }
+  ],
+  "params": {
+    "totalTime": 200,
+    "chiDemand": 1.2,
+    "lambdaRenewable": 0.5,
+    "overheadC": 0.01,
+    "procDelayT": 1,
+    "nProcessors": 1,
+    "pToSource": 0.5,
+    "timeStepHours": 0.25
+  },
+  "useForecast": false
+}
 
+```
+Run:
+```
+simulate fifo -json state.json
+```
 
 ## Simulation Results
 
@@ -181,6 +132,7 @@ The following results summarize the performance of different scheduling algorith
 - Total Time (T): 50,000  
 - Chi Demand (χ): 2.00  
 - Lambda Renewable (λ_ren): 0.50  
+- lambdaController (λ_cont) : 0.50
 - Overhead Cost (C_overhead): 0.020  
 - Time Step (dt): 0.25 hours  
 
@@ -231,7 +183,9 @@ We ran simulations comparing different schedulers under two scenarios: consideri
 
 
 
-- **Hybrid and NPPS** consistently achieve the **lowest average wait times**, both with and without blackouts.  
-- **FIFO and EDF** experience higher wait times and lower completion under blackouts.  
-- The presence of blackouts slightly reduces overall energy delivery (higher unserved kWh), but hybrid and NPPS maintain robustness.  
-- Hybrid scheduler effectively balances **priority and deadline awareness**, showing consistent performance in both scenarios.
+## Extra notes
+To reduce request generation rate, lower chiDemand in JSON or with ```set chi 0.5```.
+
+To use forecast-based generation, train a model with ml forecast then run simulation with -forecast or -forecast-csv.
+
+Use short deadlines or higher capacities to avoid backlog explosion.

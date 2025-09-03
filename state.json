@@ -1,16 +1,48 @@
 {
-  "time": 20,
+  "time": 0,
   "sources": [
-    {"name":"Solar","type":0,"capacityKW":8,"availableKW":8,"efficiency":0.95,"failureProb":0.03},
-    {"name":"Grid","type":1,"capacityKW":12,"availableKW":12,"efficiency":0.98,"failureProb":0.005}
+    {
+      "name": "Solar",
+      "type": 0,
+      "capacityKW": 25,
+      "availableKW": 25,
+      "efficiency": 0.95,
+      "failureProb": 0.01
+    },
+    {
+      "name": "Grid",
+      "type": 1,
+      "capacityKW": 20,
+      "availableKW": 20,
+      "efficiency": 0.98,
+      "failureProb": 0.002
+    }
   ],
-  "batteries":[
-    {"capacityKWh":20,"levelKWh":8,"chargeRate":4,"dischargeRate":4,"efficiency":0.92}
+  "batteries": [
+    {
+      "capacityKWh": 15,
+      "levelKWh": 7,
+      "chargeRate": 5,
+      "dischargeRate": 5,
+      "efficiency": 0.9
+    }
   ],
-  "consumers":[
-    {"id":1,"priority":2,"weight":1.0,"deadline":40},
-    {"id":2,"priority":3,"weight":2.0,"deadline":45}
+  "consumers": [
+    { "id": 1, "priority": 1, "weight": 1.0, "deadline": 20 },
+    { "id": 2, "priority": 2, "weight": 1.2, "deadline": 25 },
+    { "id": 3, "priority": 3, "weight": 2.0, "deadline": 30 }
   ],
-  "params":{"lambdaController":0.5,"lambdaRenewable":0.5,"chiDemand":2.0,"overheadC":0.02,"procDelayT":1,"totalTime":200,"nProcessors":1,"pToSource":0.5,"timeStepHours":0.25},
+  "backlog": [],
+  "params": {
+    "lambdaController": 0.5,
+    "lambdaRenewable": 0.5,
+    "chiDemand": 1.2,
+    "overheadC": 0.01,
+    "procDelayT": 1,
+    "totalTime": 200,
+    "nProcessors": 1,
+    "pToSource": 0.5,
+    "timeStepHours": 0.25
+  },
   "useForecast": false
 }

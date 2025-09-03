@@ -268,7 +268,7 @@ func (s *SimState) generateRequests(rng *rand.Rand) {
 	for i := 0; i < n; i++ {
 		c := s.Consumers[rng.Intn(len(s.Consumers))]
 		amt := 0.5 + rng.Float64()*10.0
-		deadline := s.Time + 20 + rng.Intn(50)
+		deadline := s.Time + 1 + rng.Intn(20)
 		req := &Request{
 			ArrivalTime: s.Time, ConsumerID: c.ID, AmountKWh: amt,
 			Priority: c.Priority, Weight: c.Weight, Deadline: deadline,
@@ -322,6 +322,12 @@ func (s *SimState) scheduleOrder() []*Request {
 
 func (s *SimState) serveRequests(rng *rand.Rand) {
 	// available energy this step (KW * hours)
+
+	if s.Time%10 == 0 {
+    	fmt.Printf("Step %d / %d backlog=%d completed=%d\n",
+        s.Time, s.Params.TotalTime, len(s.Backlog), len(s.Completed))
+	}
+
 	totalKW := 0.0
 	for _, src := range s.Sources {
 		totalKW += src.AvailableKW
@@ -373,25 +379,28 @@ func (s *SimState) serveRequests(rng *rand.Rand) {
 		energyBudget -= actual
 	}
 
-	// update backlog and unserved for requests past deadline
 	for _, r := range nextBacklog {
 		if s.Time > r.Deadline {
 			s.UnservedKWh += r.AmountKWh
-			// drop the request (missed)
 		} else {
 			s.Backlog = append(s.Backlog, r)
 		}
+	}
+
+	if len(s.Backlog) > 80000 {
+    	fmt.Println("Backlog exceeded 50k, trimming")
+    	s.Backlog = s.Backlog[len(s.Backlog)-80000:]
 	}
 }
 
 func (s *SimState) step(rng *rand.Rand) {
 	s.updateSources(rng)
-	fmt.Println("end of source update")
+	//fmt.Println("end of source update")
 	s.generateRequests(rng)
-	fmt.Println("end of generating requests")
+	//fmt.Println("end of generating requests")
 	s.serveRequests(rng)
-	fmt.Println("end of serving requests")
-	fmt.Printf("Time : %d",s.Time)
+	//fmt.Println("end of serving requests")
+	//fmt.Printf("Time : %d",s.Time)
 	s.Time++
 }
 
