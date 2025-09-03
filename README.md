@@ -73,14 +73,86 @@ The simulation can be configured through a JSON configuration file or via CLI co
 
 ## Code Structure
 
+### Energy Generators Models :
+####  EnergySource
+
+Represents an individual energy generation unit (e.g., a solar farm, a gas plant).
+
+- Name: Unique identifier for the source.
+
+- Type: Categorization of the source (e.g., Renewable, NonRenewable).
+
+- CapacityKW: Maximum power output capability in kilowatts.
+
+- AvailableKW: Current available power output in kilowatts.
+
+- Efficiency: Conversion efficiency of the source (e.g., fuel to electricity).
+
+- FailureProb: Probability of this source failing at any given time step.
+
+- DownUntil: The simulation time step until which the source remains offline due to a failure.
+
+- FailureHistory: A record of past outage events for this source.
+
+#### Battery
+
+Represents an energy storage unit.
+
+- CapacityKWh: Total energy storage capacity in kilowatt-hours.
+
+- LevelKWh: Current energy stored in kilowatt-hours.
+
+- ChargeRate: Maximum power at which the battery can be charged (kW).
+
+- DischargeRate: Maximum power at which the battery can be discharged (kW).
+
+- Efficiency: Round-trip efficiency for charging and discharging.
+
+### Energy Consumers and Requests :
+#### Consumer
+
+Represents an entity that requires energy (e.g., a household, a factory).
+
+- ID: Unique identifier for the consumer.
+
+- Priority: Importance level of the consumer's requests.
+
+- Weight: A factor used in weighted scheduling algorithms.
+
+- Deadline: The time step by which a consumer's request ideally needs to be served.
+
+#### Request
+
+Represents a specific demand for energy from a consumer.
+
+- ArrivalTime: The simulation time step when the request was generated.
+
+- ConsumerID: The ID of the consumer making this request.
+
+- AmountKWh: The total energy (kilowatt-hours) required by this request.
+
+- Priority: The priority of this specific request (can differ from consumer's general priority).
+
+- Weight: The weight of this specific request.
+
+- Deadline: The time step by which this request must be fulfilled.
+
+- StartTime: The time step when serving this request began.
+
+- EndTime: The time step when serving this request was completed.
+
+- ServedKW: The amount of power (KW) already served for this request in the current timestep.
+
+- Served: A boolean indicating if the request has been fully served.
+
 ### Neural Network Model :
-- **2-layer architecture with configurable hidden units**
+- 2-layer architecture with configurable hidden units**
 
-- **Adam optimization for efficient training**
+- Adam optimization for efficient training
 
-- **ReLU activation functions**
+- ReLU activation functions
 
-- **Support for regression and classification tasks**
+- Support for regression and classification tasks
 ```
 EnergyPredictor *MLP
 EnergyPredictor = NewMLP(24, 16, rand.New(rand.NewSource(42)))
